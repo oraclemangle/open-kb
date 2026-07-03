@@ -1,0 +1,339 @@
+<title>open-kb</title>
+<style>
+  :root {
+    --bg: #0f1216;
+    --panel: #171b21;
+    --panel-2: #1e232b;
+    --border: #2a313c;
+    --text: #e6e9ee;
+    --muted: #8a94a3;
+    --accent: #5b9dff;
+    --accent-2: #3f7ee0;
+    --error: #ff6b6b;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+  header h1 .dot {
+    color: var(--accent);
+  }
+  #tokenToggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #tokenToggle:hover { color: var(--text); border-color: var(--accent); }
+  #tokenBar {
+    display: none;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    gap: 8px;
+  }
+  #tokenBar.open { display: flex; }
+  #tokenBar input {
+    flex: 1;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  #tokenBar button {
+    background: var(--accent-2);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .empty-state {
+    margin: auto;
+    text-align: center;
+    color: var(--muted);
+    font-size: 14px;
+    max-width: 340px;
+    line-height: 1.6;
+  }
+  .bubble {
+    max-width: 88%;
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    line-height: 1.5;
+    font-size: 14px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .bubble.question {
+    align-self: flex-end;
+    background: var(--accent-2);
+    color: white;
+    border-bottom-right-radius: 3px;
+  }
+  .bubble.answer {
+    align-self: flex-start;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 3px;
+  }
+  .bubble.answer.loading {
+    color: var(--muted);
+    font-style: italic;
+  }
+  .sources {
+    align-self: flex-start;
+    max-width: 88%;
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+  }
+  .sources .sources-title {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+  .sources ol { margin: 0; padding-left: 18px; }
+  .sources li { margin: 2px 0; }
+  #composer {
+    display: flex;
+    gap: 10px;
+    padding: 16px 20px 20px;
+    border-top: 1px solid var(--border);
+  }
+  #question {
+    flex: 1;
+    resize: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: inherit;
+    max-height: 140px;
+  }
+  #question:focus { outline: none; border-color: var(--accent); }
+  #askBtn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0 20px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #askBtn:disabled { opacity: 0.5; cursor: default; }
+  #askBtn:not(:disabled):hover { background: var(--accent-2); }
+  #toast {
+    position: fixed;
+    bottom: 90px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--error);
+    color: white;
+    padding: 10px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    max-width: 80%;
+    text-align: center;
+  }
+  #toast.show { opacity: 1; }
+</style>
+
+<div id="app">
+  <header>
+    <h1>open<span class="dot">-</span>kb</h1>
+    <button id="tokenToggle" type="button">token</button>
+  </header>
+
+  <div id="tokenBar">
+    <input id="tokenInput" type="password" placeholder="Bearer token (optional)" autocomplete="off" />
+    <button id="tokenSave" type="button">save</button>
+  </div>
+
+  <div id="messages">
+    <div class="empty-state" id="emptyState">
+      Ask a question about your knowledge base.<br>
+      Answers are grounded in retrieved document chunks, with sources listed below each reply.
+    </div>
+  </div>
+
+  <div id="composer">
+    <textarea id="question" rows="1" placeholder="Ask a question..."></textarea>
+    <button id="askBtn" type="button">Ask</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const messagesEl = document.getElementById("messages");
+  const emptyState = document.getElementById("emptyState");
+  const questionEl = document.getElementById("question");
+  const askBtn = document.getElementById("askBtn");
+  const toastEl = document.getElementById("toast");
+  const tokenToggle = document.getElementById("tokenToggle");
+  const tokenBar = document.getElementById("tokenBar");
+  const tokenInput = document.getElementById("tokenInput");
+  const tokenSave = document.getElementById("tokenSave");
+
+  const TOKEN_KEY = "openkb_api_token";
+
+  tokenInput.value = localStorage.getItem(TOKEN_KEY) || "";
+
+  tokenToggle.addEventListener("click", function () {
+    tokenBar.classList.toggle("open");
+  });
+
+  tokenSave.addEventListener("click", function () {
+    localStorage.setItem(TOKEN_KEY, tokenInput.value.trim());
+    tokenBar.classList.remove("open");
+    showToast("Token saved");
+  });
+
+  function showToast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    setTimeout(function () { toastEl.classList.remove("show"); }, 3500);
+  }
+
+  function addBubble(text, cls) {
+    if (emptyState) emptyState.remove();
+    const div = document.createElement("div");
+    div.className = "bubble " + cls;
+    div.textContent = text;
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return div;
+  }
+
+  function addSources(sources) {
+    if (!sources || sources.length === 0) return;
+    const box = document.createElement("div");
+    box.className = "sources";
+    const title = document.createElement("div");
+    title.className = "sources-title";
+    title.textContent = "Sources";
+    box.appendChild(title);
+    const ol = document.createElement("ol");
+    sources.forEach(function (s) {
+      const li = document.createElement("li");
+      li.textContent = s.source || s.rel_path || s.path || JSON.stringify(s);
+      ol.appendChild(li);
+    });
+    box.appendChild(ol);
+    messagesEl.appendChild(box);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function autoGrow() {
+    questionEl.style.height = "auto";
+    questionEl.style.height = Math.min(questionEl.scrollHeight, 140) + "px";
+  }
+  questionEl.addEventListener("input", autoGrow);
+
+  async function ask() {
+    const query = questionEl.value.trim();
+    if (!query) return;
+
+    askBtn.disabled = true;
+    questionEl.disabled = true;
+
+    addBubble(query, "question");
+    questionEl.value = "";
+    autoGrow();
+
+    const loadingBubble = addBubble("Thinking...", "answer loading");
+
+    const token = localStorage.getItem(TOKEN_KEY) || "";
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = "Bearer " + token;
+
+    try {
+      const resp = await fetch("/ask", {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify({ query: query }),
+      });
+      const data = await resp.json().catch(function () { return {}; });
+
+      if (!resp.ok) {
+        loadingBubble.remove();
+        const msg = (data && data.error) ? data.error : ("HTTP " + resp.status);
+        showToast("Error: " + msg);
+        return;
+      }
+
+      loadingBubble.classList.remove("loading");
+      loadingBubble.textContent = data.answer || "(no answer returned)";
+      addSources(data.sources);
+    } catch (err) {
+      loadingBubble.remove();
+      showToast("Network error: " + err.message);
+    } finally {
+      askBtn.disabled = false;
+      questionEl.disabled = false;
+      questionEl.focus();
+    }
+  }
+
+  askBtn.addEventListener("click", ask);
+  questionEl.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      ask();
+    }
+  });
+
+  questionEl.focus();
+})();
+</script>

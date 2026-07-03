@@ -1,0 +1,42 @@
+# examples/gold.example.jsonl -- canonical eval set for the synthetic demo corpus.
+#
+# Format: JSONL, one JSON object per line. Lines starting with '#' and
+# blank lines are ignored (see evaluate.load_gold). Recognised keys, all
+# optional except "q":
+#   q              the question text passed to engine.search()/engine.ask()
+#   expect_source  substring match (case-insensitive) against a hit's
+#                  "source" filename -- used for recall@k / MRR
+#   domains        optional list of taxonomy domains to filter retrieval to
+#   expect_substr  substring match (case-insensitive, unicode-dash-folded)
+#                  against the generated answer text -- the strongest
+#                  signal available, since it is graded against a human-
+#                  known correct fact, not just the right document
+#
+# Philosophy: this is not a synthetic benchmark meant to produce a
+# universally "good" score -- it is the CANONICAL eval set for one
+# specific knowledge base. recall@k and MRR only mean something measured
+# against a fixed, human-curated gold set that reflects real questions
+# people actually ask of their own KB. Treat this file as a living
+# document: grow it over time as you discover new failure modes (a query
+# phrasing that should have hit a document but didn't, an answer that
+# missed a fact it should have cited), and re-run `openkb eval` before and
+# after any retrieval/rerank change to see whether it actually helped,
+# rather than assuming it did.
+{"q": "What feeds MSB-1?", "expect_source": "msb1-switchboard-manual.md", "domains": ["00_ELECTRICAL"], "expect_substr": "DG1"}
+{"q": "Which two generators provide standby power to the main switchboard?", "expect_source": "msb1-switchboard-manual.md", "expect_substr": "DG2"}
+{"q": "What is the rated output of generator DG1?", "expect_source": "dg1-diesel-generator-manual.md", "expect_substr": "500 kVA"}
+{"q": "What part number is the DG1 primary fuel filter?", "expect_source": "dg1-diesel-generator-manual.md", "expect_substr": "FF-2201"}
+{"q": "DG1 fails to start on auto-start signal, what should I check first?", "expect_source": "dg1-diesel-generator-manual.md", "expect_substr": "CPB-DG-9"}
+{"q": "What is DG2's exhaust bellows part number?", "expect_source": "dg2-diesel-generator-manual.md", "expect_substr": "EXB-DG2-01"}
+{"q": "Which pump is automatically shed from supply when the fire pump FP-101 needs to start?", "expect_source": "fp101-fire-pump-manual.md", "domains": ["04_SAFETY"], "expect_substr": "CWP-01"}
+{"q": "What is the rated duty of fire pump FP-101?", "expect_source": "fp101-fire-pump-manual.md", "expect_substr": "1000 USGPM"}
+{"q": "What is the mechanical seal part number for FP-101?", "expect_source": "fp101-fire-pump-manual.md", "expect_substr": "MSL-FP101-40"}
+{"q": "Why would CWP-01 refuse to run with no VSD fault showing?", "expect_source": "cwp01-chilled-water-pump-manual.md", "expect_substr": "fire-alarm shed interlock"}
+{"q": "What is the rated duty of chilled water pump CWP-01?", "expect_source": "cwp01-chilled-water-pump-manual.md", "expect_substr": "450 USGPM"}
+{"q": "Which air handling unit does CWP-01 supply chilled water to?", "expect_source": "cwp01-chilled-water-pump-manual.md", "expect_substr": "AHU-3"}
+{"q": "What is the design airflow of AHU-3?", "expect_source": "ahu3-air-handling-unit-manual.md", "expect_substr": "12,000 CFM"}
+{"q": "What trips the AHU-3 supply fan below 3 degrees C?", "expect_source": "ahu3-air-handling-unit-manual.md", "expect_substr": "FRT-AHU3-02"}
+{"q": "How often should the FP-101 jockey pump weekly check be performed according to the latest revision?", "expect_source": "fp101-jockey-pump-sop_revB.md", "expect_substr": "3 days"}
+{"q": "What is the model number of the standby generator supplied by Aurora Power Systems?", "expect_source": "dg1-commissioning-report.md", "expect_substr": "APG-500"}
+{"q": "What voltage and frequency does the Aurora Power Systems APG-500 generator produce?", "expect_source": "datasheet.pdf", "expect_substr": "400V"}
+{"q": "What is the dry weight of the APG-500 generator?", "expect_source": "datasheet.pdf", "expect_substr": "3950 kg"}

@@ -1,0 +1,26 @@
+[project]
+name = "open-kb"
+version = "0.1.0"
+description = "Private, offline-capable RAG knowledge base for complex physical assets: hybrid retrieval (vector + FTS5 + RRF), LLM listwise reranking, document ingest with OCR and vision-describe, an equipment/entity registry, read-replica sync, and a canonical eval harness."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "sqlite-vec>=0.1.6",
+    "pyyaml>=6.0",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+pdf = ["PyMuPDF>=1.24"]        # PDF text extraction + page rendering for OCR/vision
+dev = ["pytest>=8"]
+
+[project.scripts]
+openkb = "openkb.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

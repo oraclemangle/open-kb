@@ -1,0 +1,87 @@
+# open-kb configuration — copy to config.yaml and edit.
+# Every value can also be overridden with an env var: OPENKB_<SECTION>_<KEY>
+# e.g. OPENKB_LLM_GEN_URL, OPENKB_RERANK_ENABLED. Env vars win over YAML.
+#
+# open-kb talks to ANY OpenAI-compatible endpoints (and Ollama's native API for
+# chat/vision). Local servers such as Ollama or LM Studio are the intended
+# default — nothing needs to leave your machine/network.
+
+paths:
+  data_dir: ./data              # everything lives under here by default
+  db_path: ./data/kb.db         # SQLite database (chunks + vectors + FTS + registry)
+  inbox: ./data/inbox           # drop source documents here for ingest
+  curated: ./data/curated       # ingest moves processed originals here, per domain
+  quarantine: ./data/quarantine # documents that tripped the secret detector
+
+llm:
+  gen_url: http://127.0.0.1:11434/api/chat     # chat endpoint (Ollama native shown)
+  gen_model: your-general-model                # summarise / classify / answer
+  timeout_s: 240
+
+embeddings:
+  url: http://127.0.0.1:1234/v1/embeddings     # OpenAI-compatible embeddings endpoint
+  model: your-embedding-model
+  dim: 768                                     # MUST match the model's output dimension
+
+ocr:
+  url: http://127.0.0.1:11434/api/chat         # vision-capable chat endpoint
+  model: your-vision-model                     # used for scanned-page OCR
+  max_pages: 25
+  dpi: 150
+
+vision_describe:                               # for graphic-only drawings (no OCR-able text)
+  model: your-vision-model
+  max_pages: 4
+  min_chars: 800                               # docs below this are "text-thin" candidates
+  gain_min: 200                                # only swap in a description that adds this much
+
+rerank:
+  enabled: true
+  backend: llm                                 # llm (listwise) | service (cross-encoder) | none
+  model: your-instruct-model
+  url: http://127.0.0.1:8000/rerank            # only used by backend: service
+  pool: 15                                     # candidates given to the reranker
+
+retrieval:
+  k: 8                                         # results returned
+  rrf_k: 60                                    # reciprocal-rank-fusion constant
+  entity_boost:
+    enabled: false                             # measure on YOUR eval set before enabling
+    weight: 0.012                              # ~ a rank-20 RRF contribution
+
+# Domain taxonomy — fully yours. Ingest classifies each document into one of
+# these. Keep the names filesystem-safe; order is display order.
+taxonomy:
+  - 00_ELECTRICAL
+  - 01_MECHANICAL
+  - 02_CONTROLS
+  - 03_NETWORK_IT
+  - 04_SAFETY
+  - 05_ADMIN_SOP
+  - 06_DRAWINGS
+  - 99_MISC
+
+ingest:
+  chunk_chars: 1800
+  chunk_overlap: 200
+  max_pixels: 8000000                          # cap rendered page size for OCR/vision
+  registers: []                                # xlsx registers to re-extract, e.g.:
+  # - name: cable list
+  #   glob: "**/*cable*list*.xlsx"
+  #   header_keyword: "cable number"
+  #   sheet: null                              # null = first sheet
+
+sync:                                          # optional read-replica (serving host)
+  enabled: false
+  replica: user@replica-host                   # SSH destination
+  ssh_key: ~/.ssh/id_ed25519_openkb_replica
+  remote_db_path: /srv/open-kb/kb.db
+
+api:
+  host: 127.0.0.1
+  port: 8080
+  token: ""                                    # set to require Authorization: Bearer <token>
+
+eval:
+  gold_path: ./examples/gold.example.jsonl
+  k: 8

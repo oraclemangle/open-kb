@@ -1,0 +1,25 @@
+# local config (copy config.example.yaml -> config.yaml)
+config.yaml
+.env
+
+# data & databases — bring your own corpus, never commit it
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# logs & scratch
+logs/
+*.log
+.DS_Store
