@@ -307,6 +307,36 @@ full per-question breakdown for later comparison. See
 ad-hoc spot-checking — is the only way any retrieval "lever" earns a place
 in your `config.yaml`.
 
+## 10. Connect an AI assistant via MCP (optional)
+
+`openkb mcp` exposes the knowledge base as an MCP stdio server (tools:
+`kb_search`, `kb_ask`, `kb_status`), so a frontier-model client — Claude
+Code, Claude Desktop, Codex, or any MCP-capable agent — can search and cite
+your corpus while the corpus itself stays local. Only the retrieved chunks
+the assistant requests ever leave your machine; mind that boundary if the
+corpus is sensitive.
+
+With Claude Code:
+
+```bash
+claude mcp add open-kb -- openkb mcp
+```
+
+Or by hand in the client's `mcpServers` config (Claude Desktop, Codex, etc.):
+
+```json
+"open-kb": {
+  "command": "/path/to/open-kb/.venv/bin/openkb",
+  "args": ["--config", "/path/to/open-kb/config.yaml", "mcp"]
+}
+```
+
+Use absolute paths for both the executable and `--config` — MCP clients
+don't inherit your shell's venv or working directory. Then ask the
+assistant something like *"using the open-kb tools, what is the standby
+generator's rated output?"* and it will call `kb_search`/`kb_ask` and
+answer with citations.
+
 ## Next steps
 
 - Point `paths.inbox` at your own document tree and re-run `openkb ingest`.

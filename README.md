@@ -116,7 +116,7 @@ running the eval harness — see [`docs/quickstart.md`](docs/quickstart.md).
 
 | Doc | What it covers |
 |---|---|
-| [`docs/quickstart.md`](docs/quickstart.md) | Single-machine setup, model install, ingest, search, web UI, eval |
+| [`docs/quickstart.md`](docs/quickstart.md) | Single-machine setup, model install, ingest, search, web UI, eval, MCP hookup for Claude Code / Codex |
 | [`docs/architecture.md`](docs/architecture.md) | Component walk-through, mermaid diagram, design rationale |
 | [`docs/configuration.md`](docs/configuration.md) | Every config key, env-var override, default, and guidance |
 | [`docs/deployment.md`](docs/deployment.md) | Two-host ingest/serve pattern, SSH sync, scheduling, backups |
