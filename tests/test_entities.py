@@ -189,3 +189,52 @@ def test_propose_merges_adjudication_json_parse_fallback_defaults_not_same(cfg, 
     con.close()
     assert row[0] == 0
     assert row[1] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# apply_merges default threshold (F-18 regression)
+# ---------------------------------------------------------------------------
+
+
+def _seed_merge_pair(con, conf):
+    a = con.execute(
+        "INSERT INTO equipment(canonical_name, make, model) VALUES ('Genset 1', 'CAT', 'C32')"
+    ).lastrowid
+    b = con.execute(
+        "INSERT INTO equipment(canonical_name, make, model) VALUES ('Generator One', 'CAT', 'C32')"
+    ).lastrowid
+    con.execute(
+        "INSERT INTO equipment_merge_proposal(a_id, b_id, shared_docs, llm_same, llm_conf, status) "
+        "VALUES (?, ?, 2, 1, ?, 'proposed')",
+        (a, b, conf),
+    )
+    con.commit()
+    return a, b
+
+
+def test_apply_merges_default_rejects_below_090_confidence(cfg):
+    """F-18: CLI/library default is 0.9 -- a 0.85-confidence proposal must NOT auto-apply."""
+    con = _fresh_db(cfg)
+    _seed_merge_pair(con, conf=0.85)
+    con.close()
+
+    assert mergemod.apply_merges(cfg) == 0
+
+    con = dbmod.connect(cfg["paths"]["db_path"])
+    assert con.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 2
+    assert con.execute(
+        "SELECT COUNT(*) FROM equipment_merge_proposal WHERE status='proposed'"
+    ).fetchone()[0] == 1
+    con.close()
+
+
+def test_apply_merges_applies_at_or_above_the_default_threshold(cfg):
+    con = _fresh_db(cfg)
+    _seed_merge_pair(con, conf=0.9)
+    con.close()
+
+    assert mergemod.apply_merges(cfg) == 1
+
+    con = dbmod.connect(cfg["paths"]["db_path"])
+    assert con.execute("SELECT COUNT(*) FROM equipment").fetchone()[0] == 1
+    con.close()

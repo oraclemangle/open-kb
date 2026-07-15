@@ -31,10 +31,13 @@ def verify_backup(path: str) -> dict:
         try:
             quick_rows = con.execute("PRAGMA quick_check").fetchall()
             quick_check = "; ".join(str(row[0]) for row in quick_rows)
-            counts = {
-                table: con.execute("SELECT count(*) FROM %s" % table).fetchone()[0]
-                for table in _COUNT_TABLES
-            }
+            counts = {}
+            for table in _COUNT_TABLES:
+                # Table names cannot be bound parameters; guard the interpolation so a future
+                # edit to _COUNT_TABLES can never smuggle SQL into the query.
+                if not table.isidentifier():
+                    raise ValueError("invalid table name: %r" % table)
+                counts[table] = con.execute("SELECT count(*) FROM %s" % table).fetchone()[0]
         finally:
             con.close()
         indexes_match = counts["chunks"] == counts["vchunks"] == counts["chunks_fts"]
