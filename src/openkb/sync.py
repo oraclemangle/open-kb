@@ -59,12 +59,16 @@ run) and is stolen rather than blocking forever.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 
 _STALE_LOCK_SECONDS = 60 * 60  # 1 hour
 
@@ -73,29 +77,75 @@ def _log(msg: str) -> None:
     print("[sync] %s" % msg, file=sys.stderr)
 
 
-def _acquire_lock(lock_dir: str) -> bool:
-    """Best-effort single-instance guard. Returns True if the lock is held."""
+def _owner_path(lock_dir: str) -> str:
+    return os.path.join(lock_dir, "owner.json")
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, ValueError, OverflowError):
+        return False
+
+
+def _acquire_lock(lock_dir: str) -> str | None:
+    """Acquire a token-owned lock; never steal from a confirmed live owner."""
+    token = uuid.uuid4().hex
     try:
         os.mkdir(lock_dir)
-        return True
+        owner = {
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "token": token,
+            "created_at": time.time(),
+        }
+        with open(_owner_path(lock_dir), "w", encoding="utf-8") as fh:
+            json.dump(owner, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return token
     except FileExistsError:
         try:
             age = time.time() - os.stat(lock_dir).st_mtime
         except OSError:
             age = 0
-        if age > _STALE_LOCK_SECONDS:
-            _log("stale lock (age=%.0fs) -- stealing" % age)
-            shutil.rmtree(lock_dir, ignore_errors=True)
-            try:
-                os.mkdir(lock_dir)
-                return True
-            except FileExistsError:
-                return False
-        return False
+        if age <= _STALE_LOCK_SECONDS:
+            return None
+        try:
+            with open(_owner_path(lock_dir), encoding="utf-8") as fh:
+                owner = json.load(fh)
+            owner_pid = int(owner["pid"])
+            owner_host = str(owner["host"])
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+            _log("stale lock has unreadable ownership -- refusing to steal")
+            return None
+        if owner_host != socket.gethostname() or _pid_alive(owner_pid):
+            _log("stale-looking lock still has a live or unverifiable owner -- skip")
+            return None
+        tombstone = lock_dir + ".stale." + token
+        try:
+            os.rename(lock_dir, tombstone)
+        except OSError:
+            return None
+        _log("reclaiming stale lock from dead pid %d" % owner_pid)
+        shutil.rmtree(tombstone, ignore_errors=True)
+        return _acquire_lock(lock_dir)
 
 
-def _release_lock(lock_dir: str) -> None:
-    shutil.rmtree(lock_dir, ignore_errors=True)
+def _release_lock(lock_dir: str, token: str) -> None:
+    try:
+        with open(_owner_path(lock_dir), encoding="utf-8") as fh:
+            owner = json.load(fh)
+        if owner.get("token") != token:
+            return
+        tombstone = lock_dir + ".release." + token
+        os.rename(lock_dir, tombstone)
+        shutil.rmtree(tombstone, ignore_errors=True)
+    except (OSError, json.JSONDecodeError):
+        return
 
 
 def _sig(path: str) -> str:
@@ -105,6 +155,20 @@ def _sig(path: str) -> str:
         return "%d:%d" % (int(st.st_mtime), st.st_size)
     except OSError:
         return "missing"
+
+
+def _snapshot_signature(snapshot_path: str, superseded_path: str) -> str:
+    """Content signature of a consistent flattened snapshot and exclusions."""
+    digest = hashlib.sha256()
+    for label, path in ((b"db\0", snapshot_path), (b"superseded\0", superseded_path)):
+        digest.update(label)
+        try:
+            with open(path, "rb") as fh:
+                for block in iter(lambda: fh.read(1 << 20), b""):
+                    digest.update(block)
+        except FileNotFoundError:
+            digest.update(b"<missing>")
+    return digest.hexdigest()
 
 
 def _snapshot(db_path: str, snapshot_path: str) -> None:
@@ -153,6 +217,8 @@ def run_sync(cfg: dict) -> bool:
     replica = sync_cfg["replica"]
     ssh_key = os.path.expanduser(sync_cfg["ssh_key"])
     remote_db_path = sync_cfg["remote_db_path"]
+    ssh_timeout = int(sync_cfg.get("ssh_timeout_s", 30))
+    transfer_timeout = int(sync_cfg.get("transfer_timeout_s", 600))
 
     stage_dir = os.path.join(data_dir, ".sync_stage")
     lock_dir = os.path.join(data_dir, ".sync.lockd")
@@ -162,23 +228,12 @@ def run_sync(cfg: dict) -> bool:
         _log("FATAL: database not found at %s" % db_path)
         return False
 
-    if not _acquire_lock(lock_dir):
+    lock_token = _acquire_lock(lock_dir)
+    if lock_token is None:
         _log("another sync is in progress -- skip")
         return True
 
     try:
-        sig = "%s|%s" % (_sig(db_path), _sig(superseded_path))
-        if os.path.isfile(sentinel):
-            try:
-                with open(sentinel, "r", encoding="utf-8") as fh:
-                    prev = fh.read().strip()
-            except OSError:
-                prev = None
-            if prev == sig:
-                _log("unchanged since last sync -- skip")
-                return True
-
-        _log("starting sync (sig=%s)" % sig)
         os.makedirs(stage_dir, exist_ok=True)
         snapshot_path = os.path.join(stage_dir, "kb_snapshot.db")
 
@@ -192,27 +247,39 @@ def run_sync(cfg: dict) -> bool:
             _log("FATAL: snapshot is missing or empty")
             return False
 
-        ssh_opts = ["-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
+        sig = _snapshot_signature(snapshot_path, superseded_path)
+        if os.path.isfile(sentinel):
+            try:
+                with open(sentinel, "r", encoding="utf-8") as fh:
+                    prev = fh.read().strip()
+            except OSError:
+                prev = None
+            if prev == sig:
+                _log("unchanged since last sync -- skip")
+                return True
+
+        _log("starting sync (sig=%s)" % sig)
+        ssh_opts = ["-i", ssh_key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % ssh_timeout]
         remote_dir = os.path.dirname(remote_db_path) or "."
         incoming_path = remote_db_path + ".incoming"
 
         try:
             subprocess.run(
                 ["ssh", *ssh_opts, replica, "mkdir -p %s" % remote_dir],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, timeout=ssh_timeout,
             )
             subprocess.run(
                 ["scp", *ssh_opts, snapshot_path, "%s:%s" % (replica, incoming_path)],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, timeout=transfer_timeout,
             )
             if os.path.isfile(superseded_path):
                 subprocess.run(
                     ["scp", *ssh_opts, superseded_path,
                      "%s:%s" % (replica, os.path.join(remote_dir, "superseded.txt"))],
-                    check=True, capture_output=True, text=True,
+                    check=True, capture_output=True, text=True, timeout=transfer_timeout,
                 )
-        except subprocess.CalledProcessError as exc:
-            _log("FATAL: transfer failed: %s" % (exc.stderr or exc))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _log("FATAL: transfer failed or timed out: %s" % (getattr(exc, "stderr", None) or exc))
             return False
 
         # Atomic remote swap: same-directory `mv` is atomic, so readers never
@@ -224,10 +291,10 @@ def run_sync(cfg: dict) -> bool:
         try:
             subprocess.run(
                 ["ssh", *ssh_opts, replica, swap_cmd],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, text=True, timeout=ssh_timeout,
             )
-        except subprocess.CalledProcessError as exc:
-            _log("FATAL: remote swap failed: %s" % (exc.stderr or exc))
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _log("FATAL: remote swap failed or timed out: %s" % (getattr(exc, "stderr", None) or exc))
             return False
 
         # Sentinel is only written on success, so a failed run is retried
@@ -241,4 +308,4 @@ def run_sync(cfg: dict) -> bool:
             path = os.path.join(stage_dir, "kb_snapshot.db" + sidecar)
             if os.path.exists(path):
                 os.remove(path)
-        _release_lock(lock_dir)
+        _release_lock(lock_dir, lock_token)

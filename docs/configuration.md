@@ -177,6 +177,8 @@ host**; the serving host needs no `sync.*` config at all.
 | `replica` | `user@replica-host` | `OPENKB_SYNC_REPLICA` | SSH destination, `user@host` form |
 | `ssh_key` | `~/.ssh/id_ed25519_openkb_replica` | `OPENKB_SYNC_SSH_KEY` | Use a **dedicated** key generated for this purpose, not a personal one |
 | `remote_db_path` | `/srv/open-kb/kb.db` | `OPENKB_SYNC_REMOTE_DB_PATH` | Must match `paths.db_path` in the serving host's own `config.yaml` |
+| `ssh_timeout_s` | `30` | `OPENKB_SYNC_SSH_TIMEOUT_S` | Deadline for SSH setup and atomic-swap commands |
+| `transfer_timeout_s` | `600` | `OPENKB_SYNC_TRANSFER_TIMEOUT_S` | Deadline for each SCP transfer; timeout leaves the success sentinel untouched |
 
 ## `api`
 

@@ -184,6 +184,23 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_backup(args: argparse.Namespace) -> int:
+    from .backup import create_backup
+
+    cfg = load_config(args.config)
+    result = create_backup(cfg["paths"]["db_path"], args.path)
+    _print_json(result)
+    return 0 if result.get("ok") else 1
+
+
+def cmd_restore_check(args: argparse.Namespace) -> int:
+    from .backup import verify_backup
+
+    result = verify_backup(args.path)
+    _print_json(result)
+    return 0 if result.get("ok") else 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from .api import serve
 
@@ -301,6 +318,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("sync", help="Promote the local database to the read-replica")
     sp.set_defaults(func=cmd_sync)
+
+    sp = sub.add_parser("backup", help="Create and verify a consistent SQLite backup")
+    sp.add_argument("path", help="Destination backup database path")
+    sp.set_defaults(func=cmd_backup)
+
+    sp = sub.add_parser("restore-check", help="Verify a backup without replacing the live database")
+    sp.add_argument("path", help="Backup database path to verify")
+    sp.set_defaults(func=cmd_restore_check)
 
     sp = sub.add_parser("serve", help="Run the REST API")
     sp.add_argument("--host", default=None)

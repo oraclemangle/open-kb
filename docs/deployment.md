@@ -61,6 +61,8 @@ sync:
   replica: <replica-user>@<replica-host>
   ssh_key: ~/.ssh/id_ed25519_openkb_replica
   remote_db_path: /srv/open-kb/kb.db
+  ssh_timeout_s: 30
+  transfer_timeout_s: 600
 ```
 
 On HOST B, `config.yaml` should point `paths.db_path` at that same path
@@ -75,17 +77,16 @@ openkb sync
 
 What happens, in order (implemented in `src/openkb/sync.py`):
 
-1. **Change-gated.** A sentinel file (`data/.last_sync_sig`) records the
-   `(mtime, size)` signature of the local `kb.db` and of `superseded.txt` at
-   the last successful sync. If nothing has changed, `sync` returns
-   immediately without touching the network — safe to run on a tight timer.
-2. **Snapshot.** The live database (which runs in WAL mode for
+1. **Snapshot.** The live database (which runs in WAL mode for
    concurrent-friendly writes — its true state is spread across `kb.db`,
    `kb.db-wal`, `kb.db-shm`) is snapshotted via SQLite's `backup()` API
    against a `mode=ro` connection — safe to run while ingest is writing.
    The snapshot is then flattened to `journal_mode=DELETE`, collapsing
    everything into one self-contained file with no WAL sidecars.
-3. **Ship.** The snapshot and `superseded.txt` are `scp`'d to the replica
+2. **Content-gated.** SHA-256 over the consistent flattened snapshot and
+   `superseded.txt` is compared with the last successful sentinel. This sees
+   committed WAL-only changes; unchanged content skips network transfer.
+3. **Ship with deadlines.** The snapshot and `superseded.txt` are `scp`'d to the replica
    host as `<remote_db_path>.incoming`.
 4. **Atomic swap.** A same-directory `mv` on the remote host replaces the
    live replica file. POSIX guarantees this is atomic — a reader mid-request
@@ -98,9 +99,10 @@ What happens, in order (implemented in `src/openkb/sync.py`):
    untouched, so the next scheduled run retries automatically rather than
    silently skipping a failed attempt.
 
-Locking: a lock directory under `data/.sync.lockd` stops two concurrent sync
-runs from racing; a lock older than an hour is treated as abandoned (a
-crashed prior run) and stolen rather than blocking forever.
+Locking: `data/.sync.lockd/owner.json` records PID, host and a random ownership
+token. An old lock is never stolen while its local PID is alive (or its owner
+cannot be verified). A confirmed-dead stale owner can be reclaimed, and only
+the matching token can release the current lock.
 
 ## 3. Scheduling both ingest and sync
 
@@ -224,28 +226,33 @@ If you need the API reachable beyond localhost:
 
 ## 5. Backup guidance
 
-Back up two things, together:
+Back up two things together, but never archive a live WAL database file:
 
-- the database file: `<db_path>` (plus, if present, `<db_path>-wal` and
-  `<db_path>-shm` — though a flattened replica snapshot never has these)
+- a verified SQLite backup created with the online backup API
 - the curated tree: `paths.curated` — this holds the actual source
   documents your KB was built from, organised by taxonomy domain, plus the
   manifest (`_MANIFEST.jsonl`) that makes ingest resumable
 
 ```bash
-# simple periodic backup, HOST A
-tar czf backup-$(date +%Y%m%d).tar.gz data/kb.db data/curated data/superseded.txt 2>/dev/null
+# HOST A: create and verify a self-contained DB snapshot first
+openkb backup data/backups/kb-$(date +%Y%m%d).db
+openkb restore-check data/backups/kb-$(date +%Y%m%d).db
+
+# archive that verified snapshot with source documents and supersession state
+tar czf backup-$(date +%Y%m%d).tar.gz \
+  data/backups/kb-$(date +%Y%m%d).db data/curated data/superseded.txt
 ```
 
 **Verify restores.** A backup you've never restored is a hypothesis, not a
 backup. Periodically:
 
 ```bash
-cp backup-kb.db /tmp/restore-test.db
-sqlite3 /tmp/restore-test.db "SELECT COUNT(*) FROM documents;"
+python -c 'from openkb.backup import restore_copy; import json; print(json.dumps(restore_copy("data/backups/kb-YYYYMMDD.db", "/tmp/openkb-restore-test.db"), indent=2))'
+openkb restore-check /tmp/openkb-restore-test.db
 ```
 
-and confirm the count matches expectations. For the curated tree, spot-check
+and require `quick_check: ok` plus matching document/chunk/vector/FTS counts.
+For the curated tree, spot-check
 that a handful of `rel_path` values from `documents` actually resolve to
 files on disk.
 

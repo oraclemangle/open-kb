@@ -77,6 +77,8 @@ DEFAULTS: dict[str, Any] = {
         "replica": "user@replica-host",
         "ssh_key": "~/.ssh/id_ed25519_openkb_replica",
         "remote_db_path": "/srv/open-kb/kb.db",
+        "ssh_timeout_s": 30,
+        "transfer_timeout_s": 600,
     },
     "api": {"host": "127.0.0.1", "port": 8080, "token": ""},
     "eval": {"gold_path": "./examples/gold.example.jsonl", "k": 8},
