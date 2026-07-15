@@ -130,7 +130,7 @@ running the eval harness — see [`docs/quickstart.md`](docs/quickstart.md).
 reranker backend, entity boost, RRF constant, chunk size — is a hypothesis
 about your corpus, not a universal fact. `openkb eval` runs a fixed
 gold-question set through retrieval and generation and reports recall@k,
-MRR, and answer faithfulness. The rule this project holds itself to: run the
+MRR, known-answer correctness, and citation support. The rule this project holds itself to: run the
 eval before and after any change to a retrieval lever, and only keep the
 change if the numbers improve. What wins on someone else's corpus (including
 the corpus this project happened to be built against) is not guaranteed to

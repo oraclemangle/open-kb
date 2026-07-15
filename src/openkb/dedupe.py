@@ -67,6 +67,7 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 _SHINGLE_K = 5
 _SHINGLE_CAP = 800          # bound cost on long documents; a high-overlap dup still shares plenty
 _MIN_SIG_CHARS = 300        # very short documents (e.g. photo OCR stubs) cluster spuriously — skip
+_REVISION_MIN_TOKEN_JACCARD = 0.20
 
 _N_HASH = 64
 _MASK = (1 << 32) - 1
@@ -326,12 +327,19 @@ def find_revision_families(cfg: dict) -> list[dict]:
     db_path = cfg["paths"]["db_path"]
     con = connect(db_path, read_only=True)
     try:
-        rows = con.execute("SELECT rel_path, sha256, n_chunks FROM documents").fetchall()
+        rows = con.execute(
+            "SELECT id, rel_path, domain, sha256, n_chunks FROM documents"
+        ).fetchall()
+        text_by_document: dict[int, list[str]] = defaultdict(list)
+        for document_id, text in con.execute(
+            "SELECT document_id, text FROM chunks ORDER BY document_id, seq"
+        ):
+            text_by_document[document_id].append(text or "")
     finally:
         con.close()
 
-    families: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
-    for rel_path, sha256, n_chunks in rows:
+    families: dict[tuple[str, str, str, str, str], list[dict]] = defaultdict(list)
+    for document_id, rel_path, domain, sha256, n_chunks in rows:
         base = os.path.basename(rel_path or "")
         ext = os.path.splitext(base)[1].lower()
         parsed = _parse_revision(base)
@@ -341,18 +349,40 @@ def find_revision_families(cfg: dict) -> list[dict]:
         stem = _stem(base, kind)
         if len(stem) < 6:
             continue
-        families[(stem, ext, kind)].append(
-            {"rel_path": rel_path, "sha256": sha256, "n_chunks": n_chunks or 0, "sortkey": sortkey, "label": label}
+        parent = os.path.normcase(os.path.normpath(os.path.dirname(rel_path or "")))
+        normalised_text = _normalise_text(" ".join(text_by_document.get(document_id, [])))
+        families[(domain or "", parent, stem, ext, kind)].append(
+            {
+                "rel_path": rel_path,
+                "domain": domain,
+                "parent": parent,
+                "sha256": sha256,
+                "n_chunks": n_chunks or 0,
+                "sortkey": sortkey,
+                "label": label,
+                "normalised_text": normalised_text,
+            }
         )
 
     out = []
-    for (stem, ext, kind), members in families.items():
+    for (domain, parent, stem, ext, kind), members in families.items():
         if len(members) < 2:
             continue
         members.sort(key=lambda m: m["sortkey"], reverse=True)
         keep = members[0]
         held, supersede_list = [], []
+        comparable_members = 0
         for m in members[1:]:
+            keep_text = keep["normalised_text"]
+            member_text = m["normalised_text"]
+            if len(keep_text) >= _MIN_SIG_CHARS and len(member_text) >= _MIN_SIG_CHARS:
+                keep_tokens = set(keep_text.split())
+                member_tokens = set(member_text.split())
+                union = keep_tokens | member_tokens
+                similarity = len(keep_tokens & member_tokens) / len(union) if union else 0.0
+                if similarity < _REVISION_MIN_TOKEN_JACCARD:
+                    continue
+            comparable_members += 1
             if m["sortkey"] == keep["sortkey"]:
                 held.append({**m, "why": "same revision as the kept document"})
                 continue
@@ -360,7 +390,22 @@ def find_revision_families(cfg: dict) -> list[dict]:
                 held.append({**m, "why": "older revision has far more text than the kept latest — possible stub"})
                 continue
             supersede_list.append(m)
-        out.append({"stem": stem, "ext": ext, "kind": kind, "keep": keep, "supersede": supersede_list, "held": held})
+        if not comparable_members:
+            continue
+        for item in [keep, *supersede_list, *held]:
+            item.pop("normalised_text", None)
+        out.append(
+            {
+                "domain": domain,
+                "parent": parent,
+                "stem": stem,
+                "ext": ext,
+                "kind": kind,
+                "keep": keep,
+                "supersede": supersede_list,
+                "held": held,
+            }
+        )
 
     out.sort(key=lambda f: -len(f["supersede"]))
     return out

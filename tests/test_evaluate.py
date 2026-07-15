@@ -96,7 +96,12 @@ def test_run_eval_reports_explicit_answer_quality_metrics(tmp_path, monkeypatch)
 
     def fake_ask(query, **kwargs):
         if query == "known":
-            return {"answer": "Pump PMP-101 is listed in source [1].", "sources": [{"source": "manual.md"}]}
+            return {
+                "answer": "Pump PMP-101 is listed in source [1].",
+                "sources": [{"source": "manual.md"}],
+                "hits": [{"source": "manual.md", "text": "Equipment identifier PMP-101."}],
+                "state": "grounded",
+            }
         return {"answer": "I cannot find that information in the retrieved documents.", "sources": []}
 
     monkeypatch.setattr(evalmod, "ask", fake_ask)
@@ -106,5 +111,35 @@ def test_run_eval_reports_explicit_answer_quality_metrics(tmp_path, monkeypatch)
     assert results["citation_presence"] == {"hits": 1, "total": 1, "rate": 1.0}
     assert results["citation_validity"] == {"hits": 1, "total": 1, "rate": 1.0}
     assert results["known_answer_correctness"] == {"hits": 1, "total": 1, "rate": 1.0}
+    assert results["citation_support"] == {"hits": 1, "total": 1, "rate": 1.0}
     assert results["refusal_quality"] == {"hits": 1, "total": 1, "rate": 1.0}
     assert results["failure_behaviour"] == {"hits": 0, "total": 0, "rate": None}
+    assert "faithfulness" not in results
+    assert all("faithful" not in row for row in results["per_question"])
+
+
+def test_citation_support_requires_fact_in_the_cited_passage(tmp_path, monkeypatch):
+    gold_path = tmp_path / "gold.jsonl"
+    gold_path.write_text(
+        '{"id":"unsupported","category":"exact_identifier","q":"unsupported",'
+        '"expected_behaviour":"answer","expect_citations":true,'
+        '"expect_source":"manual.md","expected_facts":["PMP-101"]}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(evalmod, "search", lambda *args, **kwargs: [{"source": "manual.md"}])
+    monkeypatch.setattr(
+        evalmod,
+        "ask",
+        lambda *args, **kwargs: {
+            "answer": "Pump PMP-101 is available [1].",
+            "sources": [{"source": "manual.md"}],
+            "hits": [{"source": "manual.md", "text": "Unrelated bilge alarm procedure."}],
+            "state": "grounded",
+        },
+    )
+
+    results = evalmod.run_eval({}, gold_path=str(gold_path), k=8)
+
+    assert results["known_answer_correctness"]["rate"] == 1.0
+    assert results["citation_validity"]["rate"] == 1.0
+    assert results["citation_support"] == {"hits": 0, "total": 1, "rate": 0.0}

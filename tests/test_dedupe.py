@@ -15,12 +15,17 @@ def _fresh_db(cfg):
     return con
 
 
-def _seed_doc(con, rel_path, n_chunks=3):
-    con.execute(
+def _seed_doc(con, rel_path, n_chunks=3, domain="04_SAFETY", text=None):
+    cur = con.execute(
         "INSERT INTO documents(source, rel_path, domain, sha256, summary, n_chunks, extractor) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (os.path.basename(rel_path), rel_path, "04_SAFETY", "sha-" + rel_path, "s", n_chunks, "text"),
+        (os.path.basename(rel_path), rel_path, domain, "sha-" + rel_path, "s", n_chunks, "text"),
     )
+    if text is not None:
+        con.execute(
+            "INSERT INTO chunks(document_id, seq, text) VALUES (?, 0, ?)",
+            (cur.lastrowid, text),
+        )
 
 
 def test_find_revision_families_detects_reva_revb_pair_and_keeps_latest(cfg):
@@ -73,3 +78,43 @@ def test_supersede_is_idempotent_no_duplicate_lines(cfg):
     with open(path, encoding="utf-8") as fh:
         lines = [ln for ln in fh if ln.strip()]
     assert len(lines) == 1
+
+
+def test_revision_families_do_not_cross_parent_directories(cfg):
+    con = _fresh_db(cfg)
+    shared = "synthetic pump procedure inspection interval breaker reset sequence " * 20
+    _seed_doc(con, "system-a/manual_revA.md", text=shared)
+    _seed_doc(con, "system-b/manual_revB.md", text=shared)
+    con.commit()
+    con.close()
+
+    assert dedupemod.find_revision_families(cfg) == []
+
+
+def test_revision_families_do_not_cross_domains(cfg):
+    con = _fresh_db(cfg)
+    shared = "synthetic pump procedure inspection interval breaker reset sequence " * 20
+    _seed_doc(con, "system/manual_revA.md", domain="00_ELECTRICAL", text=shared)
+    _seed_doc(con, "system/manual_revB.md", domain="01_MECHANICAL", text=shared)
+    con.commit()
+    con.close()
+
+    assert dedupemod.find_revision_families(cfg) == []
+
+
+def test_revision_families_require_content_similarity_when_text_is_substantive(cfg):
+    con = _fresh_db(cfg)
+    _seed_doc(
+        con,
+        "system/manual_revA.md",
+        text="generator electrical breaker voltage alternator winding protection " * 20,
+    )
+    _seed_doc(
+        con,
+        "system/manual_revB.md",
+        text="hydraulic valve pressure accumulator cylinder hose filtration " * 20,
+    )
+    con.commit()
+    con.close()
+
+    assert dedupemod.find_revision_families(cfg) == []

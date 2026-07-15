@@ -48,7 +48,7 @@ flowchart TB
     end
 
     subgraph rails["Side rails"]
-        EVAL[eval harness<br/>recall@k / MRR / faithfulness]
+        EVAL[eval harness<br/>recall@k / MRR / citation support]
         DEDUPE[dedupe: near-dups + revision families<br/>-> superseded.txt]
         VDESC[vision-describe<br/>graphic-only drawings]
         ENT[entities: extract -> registry -> merge]
@@ -225,7 +225,7 @@ inspectable proposal.
 
 - **Eval harness** (`evaluate.py`) — a fixed, hand-authored gold-question
   set scores retrieval (recall@k, MRR) and, optionally, generated-answer
-  faithfulness and gold-substring correctness. This is the only thing that
+  citation support and gold-substring correctness. This is the only thing that
   gets to say whether a retrieval lever is worth keeping.
 - **Dedupe / supersede** (`dedupe.py`) — near-duplicate content detection
   (MinHash/LSH over chunk text, no embedding model required) and revision-

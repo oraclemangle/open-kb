@@ -286,18 +286,18 @@ openkb eval
 ```
 
 Runs every question in `examples/gold.example.jsonl` through retrieval (and,
-by default, generation) and reports recall@k, MRR, and answer faithfulness:
+by default, generation) and reports recall@k, MRR, and citation support:
 
 ```
 === open-kb eval: 12 gold questions, k=8 ===
 
-[ 1] src@1     faith:OK  what is the standby generator's rated output?
-[ 2] src@2     faith:OK  which pump feeds the...
+[ 1] src@1     state:grounded  what is the standby generator's rated output?
+[ 2] src@2     state:grounded  which pump feeds the...
 ...
 
 === RESULTS ===
 Retrieval recall@8: 11/12 = 92%   MRR: 0.714
-Answer faithfulness: 12/12 = 100%  (failures: 0)
+Citation support: 11/12 = 92%
 ```
 
 Use `--retrieval-only` to skip generation entirely (much faster, useful

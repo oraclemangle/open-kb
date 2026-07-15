@@ -16,11 +16,9 @@ objectively checkable:
     engine.search() return that source in the top k? Reported as
     recall@k and MRR (mean reciprocal rank, 0 if missed entirely).
 
-  METRIC 2 -- answer faithfulness: does engine.ask() produce a non-empty,
-    non-degenerate answer that cites at least one source, whenever
-    retrieval actually found something? This catches silent failures
-    (empty generations, "no answer" collapses) that recall@k alone can't
-    see, since it only measures the retrieval step.
+  METRIC 2 -- citation quality: does the answer cite a valid retrieved
+    passage, and does that cited passage contain the expected fact? This
+    separates citation presence/validity from actual evidential support.
 
   METRIC 3 -- gold-answer substring match (optional, strongest signal):
     if a gold item has `expect_substr`, does the generated answer contain
@@ -52,7 +50,6 @@ from .engine import ask, search
 
 __all__ = ["load_gold", "validate_gold_item", "run_eval", "main"]
 
-_REFUSAL_PREFIXES = ("[generation", "[retrieval")
 _CONTRACT_KEYS = {"id", "category", "expected_behaviour", "expect_citations"}
 _FAILURE_CATEGORIES = {"kb_failure", "model_failure", "embedding_failure"}
 _REFUSAL_MARKERS = (
@@ -135,16 +132,6 @@ def load_gold(gold_path: str) -> list[dict]:
     return out
 
 
-def _is_faithful(answer: str, sources: list[dict]) -> bool:
-    """Non-empty, cites >=1 source, and isn't one of the engine's own
-    degraded-generation messages (those are honest failures, not answers)."""
-    if not sources:
-        return False
-    if len(answer) <= 30:
-        return False
-    return not answer.lower().startswith(_REFUSAL_PREFIXES)
-
-
 def _metric(hits: int, total: int) -> dict:
     return {"hits": hits, "total": total, "rate": (hits / total) if total else None}
 
@@ -156,6 +143,21 @@ def _citation_numbers(answer: str) -> list[int]:
 def _is_refusal(answer: str, sources: list[dict]) -> bool:
     lowered = (answer or "").lower()
     return not sources and any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+
+def _citations_support_facts(citations: list[int], hits: list[dict], expected_facts: list[str]) -> bool:
+    """True when every expected fact appears in at least one cited passage."""
+    if not citations or not expected_facts:
+        return False
+    cited_texts = [
+        _fold_unicode(hits[number - 1].get("text") or "").lower()
+        for number in citations
+        if 1 <= number <= len(hits)
+    ]
+    return bool(cited_texts) and all(
+        any(_fold_unicode(fact).lower() in text for text in cited_texts)
+        for fact in expected_facts
+    )
 
 
 def run_eval(
@@ -181,12 +183,11 @@ def run_eval(
     src_total = 0
     src_hits = 0
     mrr_sum = 0.0
-    faithful = 0
-    ask_failures = 0
     substr_total = 0
     substr_hits = 0
     citation_presence_total = citation_presence_hits = 0
     citation_validity_total = citation_validity_hits = 0
+    citation_support_total = citation_support_hits = 0
     correctness_total = correctness_hits = 0
     refusal_total = refusal_hits = 0
     failure_total = failure_hits = 0
@@ -216,12 +217,8 @@ def run_eval(
             result = ask(q, cfg=cfg, domains=domains, k=k)
             answer = result.get("answer", "")
             sources = result.get("sources", [])
-            is_faithful = _is_faithful(answer, sources)
-            if is_faithful:
-                faithful += 1
-            else:
-                ask_failures += 1
-            row["faithful"] = is_faithful
+            answer_hits = result.get("hits", [])
+            row["state"] = result.get("state", "unknown")
 
             behaviour = g.get("expected_behaviour")
             citations = _citation_numbers(answer)
@@ -236,9 +233,12 @@ def run_eval(
             expected_facts = g.get("expected_facts") or []
             if expected_facts:
                 correctness_total += 1
+                citation_support_total += 1
                 folded_answer = _fold_unicode(answer).lower()
                 if all(_fold_unicode(fact).lower() in folded_answer for fact in expected_facts):
                     correctness_hits += 1
+                if _citations_support_facts(citations, answer_hits, expected_facts):
+                    citation_support_hits += 1
 
             if behaviour == "refuse":
                 refusal_total += 1
@@ -271,12 +271,6 @@ def run_eval(
         },
     }
     if not retrieval_only:
-        results["faithfulness"] = {
-            "faithful": faithful,
-            "total": len(gold),
-            "rate": (faithful / len(gold)) if gold else None,
-            "failures": ask_failures,
-        }
         results["substring"] = {
             "questions_with_expect_substr": substr_total,
             "hits": substr_hits,
@@ -284,6 +278,7 @@ def run_eval(
         }
         results["citation_presence"] = _metric(citation_presence_hits, citation_presence_total)
         results["citation_validity"] = _metric(citation_validity_hits, citation_validity_total)
+        results["citation_support"] = _metric(citation_support_hits, citation_support_total)
         results["known_answer_correctness"] = _metric(correctness_hits, correctness_total)
         results["refusal_quality"] = _metric(refusal_hits, refusal_total)
         results["failure_behaviour"] = _metric(failure_hits, failure_total)
@@ -298,8 +293,8 @@ def _print_table(results: dict) -> None:
         rank = row.get("rank")
         tag = "src@%d" % rank if rank else ("src:MISS" if row.get("expect_source") else "src:-")
         parts = ["[%2d]" % i, "%-9s" % tag]
-        if "faithful" in row:
-            parts.append("faith:OK" if row["faithful"] else "faith:XX")
+        if "state" in row:
+            parts.append("state:%s" % row["state"])
         if "substr_ok" in row:
             parts.append("sub:OK" if row["substr_ok"] else "sub:MISS")
         parts.append(row["q"][:54])
@@ -322,11 +317,12 @@ def _print_table(results: dict) -> None:
         print("Retrieval recall@%d: no gold questions had expect_source" % k)
 
     if not results.get("retrieval_only"):
-        f = results["faithfulness"]
-        print(
-            "Answer faithfulness: %d/%d = %.0f%%  (failures: %d)"
-            % (f["faithful"], f["total"], 100 * (f["rate"] or 0), f["failures"])
-        )
+        support = results["citation_support"]
+        if support["total"]:
+            print(
+                "Citation support: %d/%d = %.0f%%"
+                % (support["hits"], support["total"], 100 * (support["rate"] or 0))
+            )
         s = results["substring"]
         if s["questions_with_expect_substr"]:
             print(
@@ -339,7 +335,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run the open-kb canonical eval harness.")
     parser.add_argument("--gold", dest="gold_path", default=None, help="Path to gold JSONL (overrides config)")
     parser.add_argument("--k", type=int, default=None, help="Top-k for retrieval (overrides config)")
-    parser.add_argument("--retrieval-only", action="store_true", help="Skip ask()/faithfulness checks")
+    parser.add_argument("--retrieval-only", action="store_true", help="Skip generation and citation-quality checks")
     parser.add_argument("--json", dest="json_out", default=None, help="Write full results as JSON to this path")
     args = parser.parse_args(argv)
 

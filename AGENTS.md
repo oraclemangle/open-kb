@@ -12,7 +12,7 @@ src/openkb/
   db.py                SQLite schema + connection helpers (sqlite-vec + FTS5)
   engine.py            search() and ask() — hybrid retrieval + RRF fusion + cited answers
   rerank.py            pluggable reranker (llm / service / none), fail-open
-  evaluate.py          canonical eval harness — recall@k, MRR, answer faithfulness
+  evaluate.py          canonical eval harness — recall@k, MRR, citation support
   dedupe.py            near-duplicate + revision-family detection -> superseded.txt
   sync.py              read-replica promotion (snapshot, ship over SSH, atomic swap)
   api.py               stdlib REST API + bundled chat UI (static/index.html)
