@@ -121,6 +121,26 @@ def cmd_describe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_maintenance(args: argparse.Namespace) -> int:
+    from .maintenance import check_consistency, dead_letter_report, request_reextract, request_retry
+
+    cfg = load_config(args.config)
+    if args.action == "check":
+        result = check_consistency(cfg)
+    elif args.action == "dead-letters":
+        result = dead_letter_report(cfg)
+    elif args.action == "retry":
+        if not args.src:
+            raise ValueError("retry requires --src")
+        result = request_retry(cfg, args.src, commit=args.commit)
+    else:
+        if not args.rel_path:
+            raise ValueError("reextract requires --rel-path")
+        result = request_reextract(cfg, args.rel_path, commit=args.commit)
+    _print_json(result)
+    return 0 if not isinstance(result, dict) or result.get("ok", True) else 2
+
+
 def cmd_entities(args: argparse.Namespace) -> int:
     cfg = load_config(args.config)
     action = args.action
@@ -297,6 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=None)
     sp.add_argument("--commit", action="store_true", help="Write descriptions back (default: preview)")
     sp.set_defaults(func=cmd_describe)
+
+    sp = sub.add_parser("maintenance", help="Audit corpus/index consistency or manage dead letters")
+    sp.add_argument("action", choices=("check", "dead-letters", "retry", "reextract"))
+    sp.add_argument("--src", default=None, help="Exact dead-letter source path for retry")
+    sp.add_argument("--rel-path", default=None, help="Exact curated rel_path for re-extraction")
+    sp.add_argument("--commit", action="store_true", help="Append a durable retry request (default: preview)")
+    sp.set_defaults(func=cmd_maintenance)
 
     sp = sub.add_parser("entities", help="Entity/equipment extraction and registry pipeline")
     sp.add_argument("action", choices=("extract", "registry", "merge", "apply"))

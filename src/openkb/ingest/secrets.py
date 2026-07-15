@@ -53,9 +53,6 @@ _CONTENT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-_CONTENT_SCAN_LIMIT = 200_000  # cap so one huge document can't stall the gate
-
-
 def scan_filename(path: str) -> str | None:
     """Return a reason string if the filename itself looks secret-shaped."""
     if _FILENAME_PATTERN.search(os.path.basename(path)):
@@ -67,7 +64,7 @@ def scan_content(text: str) -> str | None:
     """Return a reason string if extracted text contains a secret shape."""
     if not text:
         return None
-    if _CONTENT_PATTERN.search(text[:_CONTENT_SCAN_LIMIT]):
+    if _CONTENT_PATTERN.search(text):
         return "content contains a credential-shaped string"
     return None
 

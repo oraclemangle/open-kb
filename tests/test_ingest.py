@@ -65,6 +65,12 @@ def test_scan_file_flags_password_assignment(tmp_path):
     assert any("credential-shaped" in r for r in reasons)
 
 
+def test_scan_content_checks_the_full_extracted_stream():
+    text = ("safe maintenance prose " * 12_000) + "\napi_key=abcdefghijklmno"
+    assert len(text) > 200_000
+    assert secretsmod.scan_content(text) == "content contains a credential-shaped string"
+
+
 def test_scan_file_passes_clean_prose():
     text = (
         "Diesel Generator DG1 — Operation & Maintenance Manual.\n"
@@ -311,6 +317,18 @@ def test_ingest_completes_with_one_curated_original_and_consistent_indexes(cfg, 
     assert counts["chunks"] >= 2
     assert counts["chunks"] == counts["vchunks"] == counts["fts"]
     assert counts["pending"] == 0
+
+
+def test_extraction_warnings_are_recorded_in_manifest_result(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        workermod,
+        "_extract_with_ocr_fallback",
+        lambda path, config: ("usable text\n[NOTE: OCR limited to first 2 of 9 pages]", "ocr", 2),
+    )
+    result = workermod.run_ingest(cfg)[0]
+    assert result["action"] == "processed"
+    assert result["extraction_warnings"] == ["ocr_page_limit"]
 
 
 def test_failure_during_curated_promotion_retains_inbox_and_staged_state(cfg, tmp_path, monkeypatch):

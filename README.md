@@ -50,6 +50,7 @@ is architectural, not a policy promise:
 | Read-replica sync | atomic, change-gated snapshot promotion over SSH from an ingest host to a read-only serving host |
 | Canonical eval harness | a fixed gold-question set scores recall@k, MRR, citation presence/validity, known-answer correctness, refusal quality, and dependency-failure behaviour |
 | Recoverable ingest | a durable pending ledger, hash-verified curated promotion, startup reconciliation, and failure-injection tests prevent interruption from deleting the only source copy |
+| Maintenance audit | curated hash + document/chunk/vector/FTS consistency checks, dead-letter reporting/retry, and safe queued re-extraction |
 | REST API + MCP server | `openkb serve` (stdlib HTTP, bundled chat UI) and `openkb mcp` (stdio JSON-RPC) front the same retrieval engine |
 
 ## Architecture

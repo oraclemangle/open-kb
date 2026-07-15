@@ -154,6 +154,18 @@ searchable.
    under the ingest lock on the next run. A `dead_letter` row means neither
    its recorded inbox source nor its curated copy passed SHA-256 validation;
    preserve the row and restore a known-good original before retrying.
+
+   Use preview-first maintenance commands for audit and recovery:
+   ```bash
+   openkb maintenance check
+   openkb maintenance dead-letters
+   openkb maintenance retry --src /exact/inbox/path.pdf
+   openkb maintenance retry --src /exact/inbox/path.pdf --commit
+   openkb maintenance reextract --rel-path 00_DOMAIN/manual.pdf
+   openkb maintenance reextract --rel-path 00_DOMAIN/manual.pdf --commit
+   ```
+   Re-extraction verifies and queues the curated original. The existing index
+   remains available until the replacement transaction commits.
 5. **Quarantine review**: anything in `paths.quarantine` tripped the secrets
    gate. Walk through it with the user — do not silently delete or silently
    re-ingest; a human call on "is this actually sensitive" is exactly what

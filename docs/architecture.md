@@ -96,6 +96,12 @@ inbox source remains; a transition with no valid source becomes a visible
 and bounded-retry record. Full detail is in
 `src/openkb/ingest/worker.py`'s module docstring.
 
+Extraction records expose OCR page limits/errors, zero-page OCR and register
+row truncation. Credential scanning covers the full extracted stream.
+`openkb maintenance check` compares curated originals, stored hashes,
+document chunk counts, vector rows and FTS rows. Dead-letter retry and safe
+re-extraction are explicit, preview-first, durable requests.
+
 ## Storage: why SQLite + sqlite-vec
 
 - **Single file.** The entire knowledge base — documents, chunk text,

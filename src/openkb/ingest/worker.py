@@ -80,6 +80,7 @@ OCR_TEXT_THIN_CHARS_PER_PAGE = 40  # below this, a PDF page is treated as "no us
 MAX_ATTEMPTS = 3
 _LOCK_NAME = ".ingest.lock"
 _MANIFEST_NAME = "_MANIFEST.jsonl"
+_REEXTRACT_NAME = "_REEXTRACT.jsonl"
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +136,31 @@ def _manifest_append(cfg: dict, record: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _reextract_request(cfg: dict, src: str) -> dict | None:
+    path = os.path.join(cfg["paths"]["curated"], _REEXTRACT_NAME)
+    latest = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if os.path.abspath(record.get("src") or "") == os.path.abspath(src):
+                    latest = record
+    except FileNotFoundError:
+        pass
+    return latest if latest and latest.get("action") == "requested" else None
+
+
+def _complete_reextract(cfg: dict, request: dict) -> None:
+    path = os.path.join(cfg["paths"]["curated"], _REEXTRACT_NAME)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({**request, "action": "completed"}) + "\n")
         fh.flush()
         os.fsync(fh.fileno())
 
@@ -448,6 +474,20 @@ def _extract_with_ocr_fallback(path: str, cfg: dict) -> tuple[str, str, int]:
     return text, method, 0
 
 
+def _extraction_warnings(text: str, extractor: str, ocr_pages: int) -> list[str]:
+    warnings: list[str] = []
+    lowered = (text or "").lower()
+    if "ocr limited to first" in lowered:
+        warnings.append("ocr_page_limit")
+    if "[ocr error on page" in lowered:
+        warnings.append("ocr_page_error")
+    if "rows truncated" in lowered:
+        warnings.append("row_limit")
+    if extractor == "ocr" and ocr_pages == 0:
+        warnings.append("ocr_no_pages")
+    return warnings
+
+
 # --------------------------------------------------------------------------
 # per-document processing
 # --------------------------------------------------------------------------
@@ -459,6 +499,7 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
     path = os.path.abspath(path)
     rel_path = os.path.relpath(path, inbox)
     basename = os.path.basename(path)
+    reextract = _reextract_request(cfg, path)
 
     pending = con.execute(
         "SELECT rel_path, dest_rel_path, sha256, state FROM ingest_pending WHERE src_path=?",
@@ -495,7 +536,7 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
 
     sha = sha if pending else _sha256_file(content_path)
     existing = con.execute("SELECT id, rel_path FROM documents WHERE sha256=?", (sha,)).fetchone()
-    if existing and not pending:
+    if existing and not pending and not reextract:
         existing_id, existing_rel = existing
         existing_curated = os.path.join(curated_root, existing_rel)
         if not _verified_hash(existing_curated, sha):
@@ -514,7 +555,7 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
             if not dry_run:
                 os.remove(path)
             return {"src": path, "action": "skip_duplicate", "sha256": sha}
-    if existing:
+    if existing and not reextract:
         if not dry_run:
             if _verified_hash(os.path.join(curated_root, existing[1]), sha):
                 os.remove(path)
@@ -547,6 +588,7 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
         "domain": domain,
         "extractor": extractor,
         "ocr_pages": ocr_pages,
+        "extraction_warnings": _extraction_warnings(text, extractor, ocr_pages),
         "chunks": len(chunks),
         "summary": summary,
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -559,7 +601,10 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
     # open across a slow network call.
     embeddings = [embed_chunk(c, cfg) for c in chunks]
 
-    if pending_dest_rel:
+    if reextract:
+        dest_path = os.path.join(curated_root, reextract["rel_path"])
+        dest_dir = os.path.dirname(dest_path)
+    elif pending_dest_rel:
         dest_path = os.path.join(curated_root, pending_dest_rel)
         dest_dir = os.path.dirname(dest_path)
     else:
@@ -586,6 +631,11 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
     cur = con.cursor()
     cur.execute("BEGIN")
     try:
+        if reextract:
+            current = cur.execute("SELECT id FROM documents WHERE sha256=?", (sha,)).fetchone()
+            if not current or current[0] != reextract.get("document_id"):
+                raise RuntimeError("re-extraction target changed since request")
+            _remove_document(con, current[0])
         cur.execute(
             "INSERT INTO documents(source, rel_path, domain, sha256, summary, n_chunks, extractor) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -615,7 +665,11 @@ def _process_one(path: str, cfg: dict, con, dry_run: bool) -> dict:
         os.remove(path)
     dbmod.delete_ingest_pending(con, path)
     con.commit()
+    if reextract:
+        _complete_reextract(cfg, reextract)
     record["action"] = "processed"
+    if reextract:
+        record["reextracted"] = True
     record["dest"] = os.path.relpath(dest_path, curated_root)
     return record
 
@@ -710,6 +764,9 @@ def _resume_state(cfg: dict) -> tuple[set[str], dict[str, int]]:
                 continue
             if action in _TERMINAL_ACTIONS:
                 done.add(src)
+            elif action == "retry_requested":
+                done.discard(src)
+                attempts[src] = 0
             else:
                 attempts[src] = attempts.get(src, 0) + 1
     done |= {src for src, count in attempts.items() if count >= MAX_ATTEMPTS}
