@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+
+import pytest
 
 from openkb import db as dbmod
 
@@ -24,8 +27,67 @@ def test_init_schema_is_idempotent(cfg):
         assert "documents" in tables
         assert "chunks" in tables
         assert "equipment" in tables
+        assert "ingest_pending" in tables
     finally:
         con.close()
+
+
+def test_ingest_pending_schema_and_helpers(empty_db):
+    columns = {
+        row[1] for row in empty_db.execute("PRAGMA table_info(ingest_pending)").fetchall()
+    }
+    assert columns == {
+        "id", "src_path", "rel_path", "dest_rel_path", "sha256", "state",
+        "error", "created_at", "updated_at",
+    }
+
+    dbmod.upsert_ingest_pending(
+        empty_db,
+        src_path="/inbox/manual.txt",
+        rel_path="manual.txt",
+        dest_rel_path="00_ELECTRICAL/manual.txt",
+        sha256="a" * 64,
+        state="staged",
+    )
+    dbmod.upsert_ingest_pending(
+        empty_db,
+        src_path="/inbox/manual.txt",
+        rel_path="manual.txt",
+        dest_rel_path="00_ELECTRICAL/manual.txt",
+        sha256="a" * 64,
+        state="curated",
+    )
+    empty_db.commit()
+
+    rows = empty_db.execute(
+        "SELECT src_path, state, error FROM ingest_pending"
+    ).fetchall()
+    assert rows == [("/inbox/manual.txt", "curated", None)]
+
+    dbmod.set_ingest_pending_state(
+        empty_db, "/inbox/manual.txt", "dead_letter", "source unavailable"
+    )
+    empty_db.commit()
+    assert empty_db.execute(
+        "SELECT state, error FROM ingest_pending WHERE src_path=?",
+        ("/inbox/manual.txt",),
+    ).fetchone() == ("dead_letter", "source unavailable")
+
+    dbmod.delete_ingest_pending(empty_db, "/inbox/manual.txt")
+    empty_db.commit()
+    assert empty_db.execute("SELECT count(*) FROM ingest_pending").fetchone()[0] == 0
+
+
+def test_ingest_pending_rejects_invalid_state(empty_db):
+    with pytest.raises(sqlite3.IntegrityError):
+        dbmod.upsert_ingest_pending(
+            empty_db,
+            src_path="/inbox/manual.txt",
+            rel_path="manual.txt",
+            dest_rel_path="00_ELECTRICAL/manual.txt",
+            sha256="a" * 64,
+            state="unknown",
+        )
 
 
 def test_vec0_serialize_and_knn_roundtrip(cfg):

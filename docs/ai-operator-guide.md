@@ -145,10 +145,24 @@ searchable.
    need a look — usually a corrupt file or an extraction edge case; `error`
    entries are retried automatically on the next `openkb ingest` run (up to
    3 attempts) before becoming `dead_letter`.
+   Also inspect durable interruption-recovery state:
+   ```bash
+   sqlite3 data/kb.db \
+     "SELECT state, rel_path, error FROM ingest_pending ORDER BY updated_at;"
+   ```
+   `staged`, `curated`, and `indexed` entries are reconciled automatically
+   under the ingest lock on the next run. A `dead_letter` row means neither
+   its recorded inbox source nor its curated copy passed SHA-256 validation;
+   preserve the row and restore a known-good original before retrying.
 5. **Quarantine review**: anything in `paths.quarantine` tripped the secrets
    gate. Walk through it with the user — do not silently delete or silently
    re-ingest; a human call on "is this actually sensitive" is exactly what
    the quarantine step exists to force.
+
+The worker rejects inbox symlinks and paths that resolve outside the inbox.
+Quarantine and curated promotions are collision-safe and durable. A duplicate
+inbox file is removed only when the corresponding curated regular file exists
+and has the same SHA-256 as the database row.
 
 **Verify:** `openkb status` document count roughly matches the number of
 ingestible files the user expected (accounting for genuine duplicates and

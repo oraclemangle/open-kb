@@ -10,6 +10,7 @@ import pytest
 
 from openkb.ingest import extract as extractmod
 from openkb.ingest import secrets as secretsmod
+from openkb.ingest import worker as workermod
 from openkb.ingest.worker import chunk_text
 
 CORPUS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "corpus")
@@ -176,3 +177,339 @@ class _FakeZipFile:
 
     def infolist(self):
         return self._infos
+
+
+# ---------------------------------------------------------------------------
+# filesystem safety primitives
+# ---------------------------------------------------------------------------
+
+def test_iter_inbox_accepts_nested_regular_file_and_rejects_symlink(tmp_path):
+    inbox = tmp_path / "inbox"
+    nested = inbox / "nested"
+    nested.mkdir(parents=True)
+    regular = nested / "manual.txt"
+    regular.write_text("regular document", encoding="utf-8")
+    external = tmp_path / "outside.txt"
+    external.write_text("outside document", encoding="utf-8")
+    (nested / "escape.txt").symlink_to(external)
+
+    assert list(workermod._iter_inbox_files(str(inbox))) == [str(regular)]
+    assert workermod._is_safe_inbox_file(str(regular), str(inbox)) is True
+    assert workermod._is_safe_inbox_file(str(nested / "escape.txt"), str(inbox)) is False
+
+
+def test_is_safe_inbox_file_rejects_resolved_escape(tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    external = tmp_path / "outside.txt"
+    external.write_text("outside document", encoding="utf-8")
+
+    assert workermod._is_safe_inbox_file(str(inbox / ".." / "outside.txt"), str(inbox)) is False
+
+
+def test_collision_safe_dest_preserves_same_name_files(tmp_path):
+    root = tmp_path / "quarantine"
+    first_dir, first_path = workermod._collision_safe_dest(
+        str(root), "manual.txt", "a" * 64
+    )
+    os.makedirs(first_dir)
+    with open(first_path, "wb") as fh:
+        fh.write(b"first")
+
+    second_dir, second_path = workermod._collision_safe_dest(
+        str(root), "manual.txt", "b" * 64
+    )
+
+    assert second_dir == first_dir
+    assert second_path != first_path
+    assert second_path.endswith("manual__bbbbbbbb.txt")
+
+
+def test_promote_copy_keeps_source_and_writes_matching_destination(tmp_path):
+    src = tmp_path / "inbox" / "manual.txt"
+    src.parent.mkdir()
+    src.write_bytes(b"durable source")
+    dest_dir = tmp_path / "curated"
+    dest = dest_dir / "manual.txt"
+
+    workermod._promote_copy(str(src), str(dest_dir), str(dest))
+
+    assert src.read_bytes() == b"durable source"
+    assert dest.read_bytes() == b"durable source"
+    sha = workermod._sha256_file(str(src))
+    assert workermod._verified_hash(str(dest), sha) is True
+
+
+def test_promote_copy_failure_keeps_source(tmp_path, monkeypatch):
+    src = tmp_path / "inbox" / "manual.txt"
+    src.parent.mkdir()
+    src.write_bytes(b"only valid copy")
+    dest_dir = tmp_path / "curated"
+    dest = dest_dir / "manual.txt"
+
+    def fail_replace(_src, _dest):
+        raise OSError("injected rename failure")
+
+    monkeypatch.setattr(workermod.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected rename failure"):
+        workermod._promote_copy(str(src), str(dest_dir), str(dest))
+
+    assert src.read_bytes() == b"only valid copy"
+    assert not dest.exists()
+
+
+# ---------------------------------------------------------------------------
+# recoverable ingest transaction
+# ---------------------------------------------------------------------------
+
+def _deterministic_ingest(cfg, tmp_path, monkeypatch):
+    inbox = tmp_path / "data" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    src = inbox / "manual.txt"
+    src.write_text(
+        "PMP-101 operating procedure.\n\nCheck breaker CB-PMP-09 before restart.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        workermod,
+        "_extract_with_ocr_fallback",
+        lambda path, config: (src.read_text(encoding="utf-8"), "text", 0),
+    )
+    monkeypatch.setattr(workermod, "classify_document", lambda *args: "00_ELECTRICAL")
+    monkeypatch.setattr(workermod, "summarize_document", lambda *args: "Synthetic pump procedure.")
+    monkeypatch.setattr(workermod, "embed_chunk", lambda *args: [0.125] * 8)
+    cfg["ingest"]["chunk_chars"] = 40
+    cfg["ingest"]["chunk_overlap"] = 5
+    return src
+
+
+def _db_counts(cfg):
+    con = workermod.dbmod.connect(cfg["paths"]["db_path"])
+    try:
+        return {
+            "documents": con.execute("SELECT count(*) FROM documents").fetchone()[0],
+            "chunks": con.execute("SELECT count(*) FROM chunks").fetchone()[0],
+            "vchunks": con.execute("SELECT count(*) FROM vchunks").fetchone()[0],
+            "fts": con.execute("SELECT count(*) FROM chunks_fts").fetchone()[0],
+            "pending": con.execute("SELECT count(*) FROM ingest_pending").fetchone()[0],
+        }
+    finally:
+        con.close()
+
+
+def test_ingest_completes_with_one_curated_original_and_consistent_indexes(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+
+    results = workermod.run_ingest(cfg)
+
+    assert [row["action"] for row in results] == ["processed"]
+    assert not src.exists()
+    curated = tmp_path / "data" / "curated" / results[0]["dest"]
+    assert curated.is_file()
+    counts = _db_counts(cfg)
+    assert counts["documents"] == 1
+    assert counts["chunks"] >= 2
+    assert counts["chunks"] == counts["vchunks"] == counts["fts"]
+    assert counts["pending"] == 0
+
+
+def test_failure_during_curated_promotion_retains_inbox_and_staged_state(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    original_promote = workermod._promote_copy
+    monkeypatch.setattr(
+        workermod,
+        "_promote_copy",
+        lambda *args: (_ for _ in ()).throw(OSError("injected promotion failure")),
+    )
+
+    first = workermod.run_ingest(cfg)
+
+    assert first[0]["action"] == "error"
+    assert src.is_file()
+    assert _db_counts(cfg) == {"documents": 0, "chunks": 0, "vchunks": 0, "fts": 0, "pending": 1}
+
+    monkeypatch.setattr(workermod, "_promote_copy", original_promote)
+    second = workermod.run_ingest(cfg)
+    assert second[0]["action"] == "processed"
+    assert _db_counts(cfg)["pending"] == 0
+
+
+def test_failure_during_index_transaction_rolls_back_and_reconciles(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    original_fts_insert = workermod.dbmod.fts_insert
+    calls = {"count": 0, "fail": True}
+
+    def fail_second_fts(con, chunk_id, text):
+        calls["count"] += 1
+        if calls["fail"] and calls["count"] == 2:
+            raise RuntimeError("injected FTS failure")
+        return original_fts_insert(con, chunk_id, text)
+
+    monkeypatch.setattr(workermod.dbmod, "fts_insert", fail_second_fts)
+    first = workermod.run_ingest(cfg)
+
+    assert first[0]["action"] == "error"
+    assert src.is_file()
+    counts = _db_counts(cfg)
+    assert counts["documents"] == counts["chunks"] == counts["vchunks"] == counts["fts"] == 0
+    assert counts["pending"] == 1
+
+    calls["fail"] = False
+    calls["count"] = 0
+    second = workermod.run_ingest(cfg)
+    assert second[0]["action"] == "processed"
+    counts = _db_counts(cfg)
+    assert counts["documents"] == 1
+    assert counts["chunks"] == counts["vchunks"] == counts["fts"]
+    assert counts["pending"] == 0
+
+
+def test_failure_after_commit_is_completed_by_startup_reconciliation(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    original_remove = workermod.os.remove
+    fail_cleanup = {"enabled": True}
+
+    def fail_inbox_cleanup(path):
+        if fail_cleanup["enabled"] and os.path.abspath(path) == os.path.abspath(src):
+            raise OSError("injected inbox cleanup failure")
+        return original_remove(path)
+
+    monkeypatch.setattr(workermod.os, "remove", fail_inbox_cleanup)
+    first = workermod.run_ingest(cfg)
+
+    assert first[0]["action"] == "error"
+    assert src.is_file()
+    counts = _db_counts(cfg)
+    assert counts["documents"] == 1
+    assert counts["pending"] == 1
+
+    fail_cleanup["enabled"] = False
+    second = workermod.run_ingest(cfg)
+    assert any(row["action"] == "reconciled" for row in second)
+    assert not src.exists()
+    assert _db_counts(cfg)["pending"] == 0
+
+
+def test_reset_waits_for_ingest_lock_before_touching_database(cfg, tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    db_path = data_dir / "kb.db"
+    wal_path = data_dir / "kb.db-wal"
+    shm_path = data_dir / "kb.db-shm"
+    db_path.write_bytes(b"database sentinel")
+    wal_path.write_bytes(b"wal sentinel")
+    shm_path.write_bytes(b"shm sentinel")
+    lock = workermod._acquire_lock(cfg)
+    assert lock is not None
+    connect_called = {"value": False}
+
+    def unexpected_connect(*args, **kwargs):
+        connect_called["value"] = True
+        raise AssertionError("database connection must not occur while locked")
+
+    monkeypatch.setattr(workermod.dbmod, "connect", unexpected_connect)
+    try:
+        result = workermod.run_ingest(cfg, reset_db=True, confirm=True)
+    finally:
+        lock.close()
+
+    assert result == [{"action": "locked", "reason": "another ingest run holds the lock"}]
+    assert connect_called["value"] is False
+    assert db_path.read_bytes() == b"database sentinel"
+    assert wal_path.read_bytes() == b"wal sentinel"
+    assert shm_path.read_bytes() == b"shm sentinel"
+
+
+def test_duplicate_is_removed_only_when_curated_hash_matches(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    sha = workermod._sha256_file(str(src))
+    curated = tmp_path / "data" / "curated" / "00_ELECTRICAL" / "manual.txt"
+    curated.parent.mkdir(parents=True)
+    curated.write_bytes(src.read_bytes())
+    con = workermod.dbmod.connect(cfg["paths"]["db_path"])
+    try:
+        workermod.dbmod.init_schema(con, 8)
+        con.execute(
+            "INSERT INTO documents(source, rel_path, domain, sha256) VALUES (?, ?, ?, ?)",
+            ("manual.txt", "00_ELECTRICAL/manual.txt", "00_ELECTRICAL", sha),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    result = workermod.run_ingest(cfg)
+
+    assert result[0]["action"] == "skip_duplicate"
+    assert not src.exists()
+    assert workermod._verified_hash(str(curated), sha)
+
+
+def test_missing_curated_duplicate_row_is_repaired_without_source_loss(cfg, tmp_path, monkeypatch):
+    src = _deterministic_ingest(cfg, tmp_path, monkeypatch)
+    sha = workermod._sha256_file(str(src))
+    con = workermod.dbmod.connect(cfg["paths"]["db_path"])
+    try:
+        workermod.dbmod.init_schema(con, 8)
+        con.execute(
+            "INSERT INTO documents(source, rel_path, domain, sha256) VALUES (?, ?, ?, ?)",
+            ("manual.txt", "00_ELECTRICAL/missing.txt", "00_ELECTRICAL", sha),
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(
+        workermod,
+        "_promote_copy",
+        lambda *args: (_ for _ in ()).throw(OSError("injected promotion failure")),
+    )
+
+    result = workermod.run_ingest(cfg)
+
+    assert result[0]["action"] == "error"
+    assert src.is_file()
+    counts = _db_counts(cfg)
+    assert counts["documents"] == 0
+    assert counts["pending"] == 1
+
+
+def test_reconciliation_can_index_from_curated_when_inbox_copy_is_missing(cfg, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    curated = data / "curated" / "00_ELECTRICAL" / "manual.txt"
+    curated.parent.mkdir(parents=True)
+    curated.write_text(
+        "PMP-101 operating procedure.\n\nCheck breaker CB-PMP-09 before restart.",
+        encoding="utf-8",
+    )
+    missing_src = data / "inbox" / "manual.txt"
+    sha = workermod._sha256_file(str(curated))
+    con = workermod.dbmod.connect(cfg["paths"]["db_path"])
+    try:
+        workermod.dbmod.init_schema(con, 8)
+        workermod.dbmod.upsert_ingest_pending(
+            con,
+            src_path=str(missing_src),
+            rel_path="manual.txt",
+            dest_rel_path="00_ELECTRICAL/manual.txt",
+            sha256=sha,
+            state="curated",
+        )
+        con.commit()
+    finally:
+        con.close()
+    monkeypatch.setattr(
+        workermod,
+        "_extract_with_ocr_fallback",
+        lambda path, config: (open(path, encoding="utf-8").read(), "text", 0),
+    )
+    monkeypatch.setattr(workermod, "classify_document", lambda *args: "00_ELECTRICAL")
+    monkeypatch.setattr(workermod, "summarize_document", lambda *args: "Synthetic pump procedure.")
+    monkeypatch.setattr(workermod, "embed_chunk", lambda *args: [0.125] * 8)
+    cfg["ingest"]["chunk_chars"] = 40
+    cfg["ingest"]["chunk_overlap"] = 5
+
+    result = workermod.run_ingest(cfg)
+
+    assert any(row["action"] == "processed" for row in result)
+    counts = _db_counts(cfg)
+    assert counts["documents"] == 1
+    assert counts["pending"] == 0

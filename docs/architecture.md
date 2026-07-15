@@ -82,15 +82,19 @@ For every file dropped into `paths.inbox`: dedupe by SHA-256 → secrets gate
 (filename, then content) → extract text (format-specific; PDFs get an OCR
 fallback when the text layer is thin) → classify into exactly one taxonomy
 bucket via the general LLM → summarise → chunk on paragraph boundaries →
-embed each chunk → commit document + chunks + vectors + FTS rows in a single
-transaction → move the original into `curated/<domain>/` → append one line
-to `curated/_MANIFEST.jsonl`.
+embed each chunk → record a durable pending transition → copy and hash-verify
+the original in `curated/<domain>/` → commit document + chunks + vectors +
+FTS rows in one transaction → remove the matching inbox copy → append one
+line to `curated/_MANIFEST.jsonl`.
 
-The manifest is the resumability ledger: a file already recorded there (with
-a terminal action) is never reprocessed, and a file that keeps failing is
-retried up to a small cap before being logged as a permanent skip — so one
-persistently broken document can't stall the rest of an inbox. Full detail
-in `src/openkb/ingest/worker.py`'s module docstring.
+`ingest_pending` is the durable interruption-recovery ledger. At every locked
+startup the worker reconciles staged, curated, and indexed transitions before
+enumerating new files. A valid curated copy can finish indexing even if the
+inbox copy disappeared; inconsistent DB rows are rolled back when a valid
+inbox source remains; a transition with no valid source becomes a visible
+`dead_letter`. The JSONL manifest remains the operator-facing attempt history
+and bounded-retry record. Full detail is in
+`src/openkb/ingest/worker.py`'s module docstring.
 
 ## Storage: why SQLite + sqlite-vec
 

@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(document_id);
 
+CREATE TABLE IF NOT EXISTS ingest_pending (
+    id            INTEGER PRIMARY KEY,
+    src_path      TEXT NOT NULL UNIQUE,
+    rel_path      TEXT NOT NULL,
+    dest_rel_path TEXT NOT NULL,
+    sha256        TEXT NOT NULL,
+    state         TEXT NOT NULL CHECK (state IN ('staged', 'curated', 'indexed', 'dead_letter')),
+    error         TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS doc_entities (
     document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
     payload     TEXT NOT NULL,             -- strict-JSON LLM extraction
@@ -111,3 +123,41 @@ def fts_insert(con: sqlite3.Connection, chunk_id: int, text: str) -> None:
 def fts_delete(con: sqlite3.Connection, chunk_id: int, text: str) -> None:
     con.execute("INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES ('delete', ?, ?)",
                 (chunk_id, text))
+
+
+def upsert_ingest_pending(
+    con: sqlite3.Connection,
+    *,
+    src_path: str,
+    rel_path: str,
+    dest_rel_path: str,
+    sha256: str,
+    state: str,
+) -> None:
+    """Create or refresh the durable file-transition ledger entry."""
+    con.execute(
+        "INSERT INTO ingest_pending "
+        "(src_path, rel_path, dest_rel_path, sha256, state) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(src_path) DO UPDATE SET "
+        "rel_path=excluded.rel_path, dest_rel_path=excluded.dest_rel_path, "
+        "sha256=excluded.sha256, state=excluded.state, error=NULL, "
+        "updated_at=datetime('now')",
+        (src_path, rel_path, dest_rel_path, sha256, state),
+    )
+
+
+def set_ingest_pending_state(
+    con: sqlite3.Connection,
+    src_path: str,
+    state: str,
+    error: str | None = None,
+) -> None:
+    con.execute(
+        "UPDATE ingest_pending SET state=?, error=?, updated_at=datetime('now') "
+        "WHERE src_path=?",
+        (state, error, src_path),
+    )
+
+
+def delete_ingest_pending(con: sqlite3.Connection, src_path: str) -> None:
+    con.execute("DELETE FROM ingest_pending WHERE src_path=?", (src_path,))

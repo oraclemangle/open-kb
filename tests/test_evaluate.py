@@ -75,3 +75,36 @@ def test_load_gold_skips_comments_blank_and_malformed_lines(tmp_path):
     )
     gold = evalmod.load_gold(str(gold_path))
     assert [g["q"] for g in gold] == ["valid one", "valid two"]
+
+
+def test_run_eval_reports_explicit_answer_quality_metrics(tmp_path, monkeypatch):
+    gold_path = tmp_path / "gold.jsonl"
+    gold_path.write_text(
+        '{"id":"known","category":"exact_identifier","q":"known",'
+        '"expected_behaviour":"answer","expect_citations":true,'
+        '"expect_source":"manual.md","expected_facts":["PMP-101"]}\n'
+        '{"id":"missing","category":"missing_information","q":"missing",'
+        '"expected_behaviour":"refuse","expect_citations":false}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        evalmod,
+        "search",
+        lambda query, **kwargs: ([{"source": "manual.md"}] if query == "known" else []),
+    )
+
+    def fake_ask(query, **kwargs):
+        if query == "known":
+            return {"answer": "Pump PMP-101 is listed in source [1].", "sources": [{"source": "manual.md"}]}
+        return {"answer": "I cannot find that information in the retrieved documents.", "sources": []}
+
+    monkeypatch.setattr(evalmod, "ask", fake_ask)
+
+    results = evalmod.run_eval({}, gold_path=str(gold_path), k=8)
+
+    assert results["citation_presence"] == {"hits": 1, "total": 1, "rate": 1.0}
+    assert results["citation_validity"] == {"hits": 1, "total": 1, "rate": 1.0}
+    assert results["known_answer_correctness"] == {"hits": 1, "total": 1, "rate": 1.0}
+    assert results["refusal_quality"] == {"hits": 1, "total": 1, "rate": 1.0}
+    assert results["failure_behaviour"] == {"hits": 0, "total": 0, "rate": None}

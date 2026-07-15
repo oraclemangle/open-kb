@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import unicodedata
 from typing import Any
@@ -49,9 +50,47 @@ from typing import Any
 from .config import load_config
 from .engine import ask, search
 
-__all__ = ["load_gold", "run_eval", "main"]
+__all__ = ["load_gold", "validate_gold_item", "run_eval", "main"]
 
 _REFUSAL_PREFIXES = ("[generation", "[retrieval")
+_CONTRACT_KEYS = {"id", "category", "expected_behaviour", "expect_citations"}
+_FAILURE_CATEGORIES = {"kb_failure", "model_failure", "embedding_failure"}
+_REFUSAL_MARKERS = (
+    "cannot find", "could not find", "not found", "no relevant",
+    "insufficient information", "retrieval failed", "generation failed",
+    "embedding failed", "unavailable", "offline",
+)
+
+
+def validate_gold_item(item: dict) -> None:
+    """Validate the richer vessel-style gold contract.
+
+    The historical example format remains accepted by :func:`load_gold`;
+    records opting into any rich-contract key must satisfy the whole contract.
+    """
+    required = {"id", "category", "q", "expected_behaviour", "expect_citations"}
+    missing = sorted(required - set(item))
+    if missing:
+        raise ValueError("missing required keys: %s" % ", ".join(missing))
+    if not all(isinstance(item[key], str) and item[key].strip() for key in ("id", "category", "q")):
+        raise ValueError("id, category and q must be non-empty strings")
+    if not isinstance(item["expect_citations"], bool):
+        raise ValueError("expect_citations must be boolean")
+
+    category = item["category"]
+    behaviour = item["expected_behaviour"]
+    failure_or_missing = category in _FAILURE_CATEGORIES or category == "missing_information"
+    if failure_or_missing:
+        if behaviour not in {"refuse", "degraded"}:
+            raise ValueError("failure/missing gold item must expect refuse or degraded behaviour")
+        return
+
+    if behaviour != "answer" or not item.get("expect_source") or not item.get("expected_facts"):
+        raise ValueError("answerable gold item requires answer behaviour, expect_source and expected_facts")
+    if not isinstance(item["expected_facts"], list) or not all(
+        isinstance(fact, str) and fact.strip() for fact in item["expected_facts"]
+    ):
+        raise ValueError("answerable gold item expected_facts must be non-empty strings")
 
 
 def _fold_unicode(text: str) -> str:
@@ -81,7 +120,10 @@ def load_gold(gold_path: str) -> list[dict]:
                 if not line or line.startswith("#"):
                     continue
                 try:
-                    out.append(json.loads(line))
+                    item = json.loads(line)
+                    if _CONTRACT_KEYS & set(item):
+                        validate_gold_item(item)
+                    out.append(item)
                 except json.JSONDecodeError as e:
                     print(
                         "WARNING: %s:%d: skipping malformed gold line (%s)"
@@ -101,6 +143,19 @@ def _is_faithful(answer: str, sources: list[dict]) -> bool:
     if len(answer) <= 30:
         return False
     return not answer.lower().startswith(_REFUSAL_PREFIXES)
+
+
+def _metric(hits: int, total: int) -> dict:
+    return {"hits": hits, "total": total, "rate": (hits / total) if total else None}
+
+
+def _citation_numbers(answer: str) -> list[int]:
+    return [int(value) for value in re.findall(r"\[(\d+)\]", answer or "")]
+
+
+def _is_refusal(answer: str, sources: list[dict]) -> bool:
+    lowered = (answer or "").lower()
+    return not sources and any(marker in lowered for marker in _REFUSAL_MARKERS)
 
 
 def run_eval(
@@ -130,6 +185,11 @@ def run_eval(
     ask_failures = 0
     substr_total = 0
     substr_hits = 0
+    citation_presence_total = citation_presence_hits = 0
+    citation_validity_total = citation_validity_hits = 0
+    correctness_total = correctness_hits = 0
+    refusal_total = refusal_hits = 0
+    failure_total = failure_hits = 0
 
     for g in gold:
         q = g["q"]
@@ -162,6 +222,32 @@ def run_eval(
             else:
                 ask_failures += 1
             row["faithful"] = is_faithful
+
+            behaviour = g.get("expected_behaviour")
+            citations = _citation_numbers(answer)
+            if g.get("expect_citations") is True:
+                citation_presence_total += 1
+                citation_validity_total += 1
+                if citations:
+                    citation_presence_hits += 1
+                if citations and all(1 <= number <= len(sources) for number in citations):
+                    citation_validity_hits += 1
+
+            expected_facts = g.get("expected_facts") or []
+            if expected_facts:
+                correctness_total += 1
+                folded_answer = _fold_unicode(answer).lower()
+                if all(_fold_unicode(fact).lower() in folded_answer for fact in expected_facts):
+                    correctness_hits += 1
+
+            if behaviour == "refuse":
+                refusal_total += 1
+                if _is_refusal(answer, sources):
+                    refusal_hits += 1
+            if g.get("category") in _FAILURE_CATEGORIES:
+                failure_total += 1
+                if behaviour == "degraded" and _is_refusal(answer, sources):
+                    failure_hits += 1
 
             if expect_substr:
                 substr_total += 1
@@ -196,6 +282,11 @@ def run_eval(
             "hits": substr_hits,
             "rate": (substr_hits / substr_total) if substr_total else None,
         }
+        results["citation_presence"] = _metric(citation_presence_hits, citation_presence_total)
+        results["citation_validity"] = _metric(citation_validity_hits, citation_validity_total)
+        results["known_answer_correctness"] = _metric(correctness_hits, correctness_total)
+        results["refusal_quality"] = _metric(refusal_hits, refusal_total)
+        results["failure_behaviour"] = _metric(failure_hits, failure_total)
     return results
 
 
