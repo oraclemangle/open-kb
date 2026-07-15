@@ -162,6 +162,13 @@ Type=oneshot
 WorkingDirectory=<PLACEHOLDER_REPO_PATH>
 ExecStart=<PLACEHOLDER_VENV_PATH>/bin/openkb --config <PLACEHOLDER_REPO_PATH>/config.yaml ingest
 User=<PLACEHOLDER_SERVICE_USER>
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=<PLACEHOLDER_REPO_PATH>/data
+MemoryMax=4G
+CPUQuota=200%
 ```
 
 `/etc/systemd/system/openkb-ingest.timer`:

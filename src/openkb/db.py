@@ -20,6 +20,8 @@ import struct
 
 import sqlite_vec
 
+SCHEMA_VERSION = 1
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
     id          INTEGER PRIMARY KEY,
@@ -109,10 +111,17 @@ def connect(db_path: str, read_only: bool = False) -> sqlite3.Connection:
 
 
 def init_schema(con: sqlite3.Connection, dim: int) -> None:
-    """Create all tables (idempotent)."""
+    """Create/migrate the schema and reject databases from newer software."""
+    version = con.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            "database uses newer schema version %d (supported: %d)" % (version, SCHEMA_VERSION)
+        )
     con.executescript(SCHEMA)
     con.execute(FTS)
     con.execute(VEC % dim)
+    if version < SCHEMA_VERSION:
+        con.execute("PRAGMA user_version=%d" % SCHEMA_VERSION)
     con.commit()
 
 

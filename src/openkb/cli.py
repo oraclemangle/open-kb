@@ -126,7 +126,7 @@ def cmd_maintenance(args: argparse.Namespace) -> int:
 
     cfg = load_config(args.config)
     if args.action == "check":
-        result = check_consistency(cfg)
+        result = check_consistency(cfg, stale_days=args.stale_days)
     elif args.action == "dead-letters":
         result = dead_letter_report(cfg)
     elif args.action == "retry":
@@ -323,13 +323,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--src", default=None, help="Exact dead-letter source path for retry")
     sp.add_argument("--rel-path", default=None, help="Exact curated rel_path for re-extraction")
     sp.add_argument("--commit", action="store_true", help="Append a durable retry request (default: preview)")
+    sp.add_argument("--stale-days", type=int, default=365, help="Age threshold reported by maintenance check")
     sp.set_defaults(func=cmd_maintenance)
 
     sp = sub.add_parser("entities", help="Entity/equipment extraction and registry pipeline")
     sp.add_argument("action", choices=("extract", "registry", "merge", "apply"))
     sp.add_argument("--limit", type=int, default=None)
     sp.add_argument("--commit", action="store_true", help="Write results back (default: preview)")
-    sp.add_argument("--min-conf", type=float, default=0.8, help="Confidence threshold for `apply`")
+    sp.add_argument("--min-conf", type=float, default=0.9, help="Confidence threshold for `apply`")
     sp.set_defaults(func=cmd_entities)
 
     sp = sub.add_parser("dedupe", help="Find near-duplicates or revision families")

@@ -123,3 +123,13 @@ def test_vec0_serialize_and_knn_roundtrip(cfg):
         assert rows[0][1] <= rows[1][1] <= rows[2][1]
     finally:
         con.close()
+def test_schema_sets_and_rejects_future_user_version(tmp_path):
+    path = tmp_path / "versioned.db"
+    con = dbmod.connect(str(path))
+    dbmod.init_schema(con, dim=8)
+    assert con.execute("PRAGMA user_version").fetchone()[0] == dbmod.SCHEMA_VERSION
+    con.execute("PRAGMA user_version=999")
+    con.commit()
+    with pytest.raises(RuntimeError, match="newer schema"):
+        dbmod.init_schema(con, dim=8)
+    con.close()

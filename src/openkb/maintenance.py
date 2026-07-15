@@ -95,7 +95,7 @@ def request_reextract(cfg: dict, rel_path: str, commit: bool = False) -> dict:
     return result
 
 
-def check_consistency(cfg: dict) -> dict:
+def check_consistency(cfg: dict, stale_days: int = 365) -> dict:
     con = dbmod.connect(cfg["paths"]["db_path"], read_only=True)
     try:
         documents = con.execute("SELECT id, rel_path, sha256, n_chunks FROM documents").fetchall()
@@ -118,6 +118,12 @@ def check_consistency(cfg: dict) -> dict:
             "pending": con.execute("SELECT count(*) FROM ingest_pending WHERE state != 'dead_letter'").fetchone()[0],
             "dead_letter_pending": con.execute("SELECT count(*) FROM ingest_pending WHERE state = 'dead_letter'").fetchone()[0],
         }
+        stale_documents = [
+            row[0] for row in con.execute(
+                "SELECT rel_path FROM documents WHERE julianday('now') - julianday(ingested_at) >= ? ORDER BY rel_path",
+                (max(1, int(stale_days)),),
+            )
+        ]
     finally:
         con.close()
     index_drift = counts["chunks"] != counts["vectors"] or counts["chunks"] != counts["fts"]
@@ -128,5 +134,7 @@ def check_consistency(cfg: dict) -> dict:
         "document_chunk_mismatches": chunk_mismatches,
         "index_count_mismatch": index_drift,
         "counts": counts,
+        "stale_days": max(1, int(stale_days)),
+        "stale_documents": stale_documents,
         "dead_letters": dead_letter_report(cfg),
     }
