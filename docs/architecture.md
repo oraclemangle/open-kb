@@ -106,7 +106,8 @@ re-extraction are explicit, preview-first, durable requests.
 
 - **Single file.** The entire knowledge base — documents, chunk text,
   embeddings, the FTS index, the equipment registry — lives in one `.db`
-  file. Backup is `cp`. A read replica is a file copy shipped over SSH, not
+  file. Backups use SQLite's online backup API (`openkb backup`) so WAL-mode
+  writes are captured consistently. A read replica is a verified snapshot shipped over SSH, not
   a second service to stand up and keep in sync.
 - **No server.** `sqlite-vec` loads as a SQLite extension inside the same
   process that's already talking to the database — there's no separate
