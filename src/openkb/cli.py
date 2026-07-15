@@ -67,7 +67,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     from .ingest.worker import run_ingest
 
     cfg = load_config(args.config)
-    result = run_ingest(cfg, limit=args.limit, dry_run=args.dry_run, reset_db=args.reset_db)
+    result = run_ingest(
+        cfg, limit=args.limit, dry_run=args.dry_run,
+        reset_db=args.reset_db, confirm=args.confirm_reset,
+    )
     _print_json(result)
     return 0
 
@@ -296,6 +299,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=None, help="Max documents to process")
     sp.add_argument("--dry-run", action="store_true", help="Do not write to the database")
     sp.add_argument("--reset-db", action="store_true", help="Drop and recreate the schema first")
+    sp.add_argument("--confirm-reset", action="store_true", help="Required second confirmation for --reset-db")
     sp.set_defaults(func=cmd_ingest)
 
     sp = sub.add_parser("search", help="Hybrid search over the knowledge base")

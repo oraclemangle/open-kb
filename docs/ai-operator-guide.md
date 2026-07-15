@@ -37,28 +37,16 @@ as of this writing. Neither is a reason to avoid the tool — both have a
 straightforward workaround — but know about them before you rely on the
 affected subcommands:
 
-1. **`openkb ingest --reset-db` will raise, not reset.**
+1. **Database reset requires two explicit CLI flags.**
    `run_ingest()` (in `src/openkb/ingest/worker.py`) requires **both**
    `reset_db=True` **and** `confirm=True` before it deletes `kb.db`; the CLI
-   only wires up `--reset-db` and never passes `confirm`. Calling `openkb
-   ingest --reset-db` will raise `ValueError` with a message explaining the
-   guard, rather than silently doing nothing or silently wiping data —
-   which is the safe failure mode, just not the convenient one. If a reset
-   is genuinely needed, do it explicitly instead:
+   exposes the same two-signal guard. If a reset is genuinely required, use:
    ```bash
-   rm -f data/kb.db data/kb.db-wal data/kb.db-shm
-   openkb init
-   openkb ingest
+   openkb ingest --reset-db --confirm-reset
    ```
-2. **`openkb describe` will raise a `TypeError`.**
-   `describe_thin_documents()` (in `src/openkb/ingest/describe.py`) requires
-   a positional `embed_fn` callable argument; the CLI's `cmd_describe` calls
-   it without one. Until this is fixed upstream, treat `openkb describe` as
-   not yet wired up via the CLI — vision-describe is otherwise fully
-   implemented and reachable by calling `describe_thin_documents` directly
-   from a short Python snippet with an `embed_fn` that POSTs to
-   `embeddings.url` (see the shape of `embed_chunk` in
-   `src/openkb/ingest/worker.py` for the expected request/response).
+2. **`openkb describe` is wired to the configured embedding endpoint.**
+   Preview with `openkb describe --limit 1`; add `--commit` only after the
+   generated description and source selection have been reviewed.
 
 Report these to the user if you hit them; don't silently work around them
 in a way that hides the underlying bug.
@@ -193,8 +181,8 @@ quarantined items).
   the DB for that document (`sqlite3 data/kb.db "SELECT extractor FROM
   documents WHERE rel_path LIKE '%name%'"`) — if it's `text` not `ocr`, the
   OCR-fallback threshold wasn't triggered; if it's `ocr` but still thin, the
-  document is likely graphic-only and needs vision-describe (see the CLI gap
-  note above for the current workaround).
+  document is likely graphic-only and needs vision-describe; preview it with
+  `openkb describe --limit 1`.
 
 ## Phase 3 — Quality pass
 
