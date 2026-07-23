@@ -60,7 +60,7 @@ _REFUSAL_MARKERS = (
 
 
 def validate_gold_item(item: dict) -> None:
-    """Validate the richer vessel-style gold contract.
+    """Validate the richer canonical gold contract.
 
     The historical example format remains accepted by :func:`load_gold`;
     records opting into any rich-contract key must satisfy the whole contract.

@@ -1,4 +1,4 @@
-# Synthetic, redacted vessel-style evaluation set. No operational identifiers.
+# Synthetic evaluation set. No operational identifiers.
 {"id":"exact-identifier-001","category":"exact_identifier","q":"What is the primary fuel-filter part number for generator GEN-101?","expected_behaviour":"answer","expect_citations":true,"expect_source":"gen-101-manual.md","expected_facts":["FLT-2201"]}
 {"id":"procedure-001","category":"procedure","q":"GEN-101 does not start automatically. What should be checked first?","expected_behaviour":"answer","expect_citations":true,"expect_source":"gen-101-manual.md","expected_facts":["CB-GEN-09"]}
 {"id":"register-001","category":"register","q":"Which load is supplied by cable CAB-042?","expected_behaviour":"answer","expect_citations":true,"expect_source":"synthetic-cable-register.xlsx","expected_facts":["PMP-101"]}

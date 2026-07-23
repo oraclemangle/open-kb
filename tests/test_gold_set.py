@@ -1,4 +1,4 @@
-"""Contract tests for the redacted vessel-style canonical gold set."""
+"""Contract tests for the canonical gold set."""
 from __future__ import annotations
 
 import os
@@ -13,7 +13,7 @@ from openkb import evaluate as evalmod
 GOLD_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "examples",
-    "gold.vessel-redacted.jsonl",
+    "gold.canonical.jsonl",
 )
 
 REQUIRED_CATEGORIES = {
@@ -30,7 +30,7 @@ REQUIRED_CATEGORIES = {
 }
 
 
-def test_redacted_gold_set_has_unique_ids_and_required_coverage():
+def test_canonical_gold_set_has_unique_ids_and_required_coverage():
     gold = evalmod.load_gold(GOLD_PATH)
 
     assert gold
@@ -39,7 +39,7 @@ def test_redacted_gold_set_has_unique_ids_and_required_coverage():
     assert REQUIRED_CATEGORIES <= {item["category"] for item in gold}
 
 
-def test_redacted_gold_set_records_satisfy_schema():
+def test_canonical_gold_set_records_satisfy_schema():
     gold = evalmod.load_gold(GOLD_PATH)
 
     for item in gold:
@@ -77,7 +77,7 @@ def test_validate_gold_item_rejects_malformed_contracts(item, message):
         evalmod.validate_gold_item(item)
 
 
-def test_redacted_gold_hybrid_retrieval_baseline(cfg, monkeypatch):
+def test_canonical_gold_hybrid_retrieval_baseline(cfg, monkeypatch):
     documents = [
         ("gen-101-manual.md", "GEN-101 primary fuel filter part number FLT-2201."),
         ("gen-101-procedure.md", "GEN-101 automatic start troubleshooting begins at breaker CB-GEN-09."),
