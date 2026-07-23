@@ -125,6 +125,11 @@ running the eval harness — see [`docs/quickstart.md`](docs/quickstart.md).
 | [`docs/ai-operator-guide.md`](docs/ai-operator-guide.md) | Phased runbook for an AI coding agent operating this repo |
 | [`docs/lessons-learned.md`](docs/lessons-learned.md) | Honest engineering notes — what worked, what didn't, and why |
 
+Looking for a richer front-end? The companion **open-kb-dashboard** project adds
+a full operator UI on top of this API: streaming chat with citation chips and a
+source viewer, splash screen with live-telemetry pulse (bring your own data via
+a small adapter), inline SVG charts, sessions, themes and document upload.
+
 ## Philosophy
 
 **Measure, don't assume.** Every retrieval "lever" in this codebase —

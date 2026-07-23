@@ -9,19 +9,25 @@ Routes
   GET  /                 static/index.html (the bundled chat UI)
   GET  /health           {"ok": true, "documents": N, "chunks": N}
   GET  /stats            per-domain counts + equipment count + db file size
+  GET  /domains          configured taxonomy domains + document counts (zero-filled)
+  GET  /source           {"document": {...}, "text": "..."} for one document,
+                         looked up by ?document_id=N or ?rel_path=...
   POST /search           {"query", "domains"?, "k"?}  -> list of hits
   POST /ask              {"query", "domains"?, "k"?}  -> {"answer","sources"}
 
 Auth
 ----
-If `api.token` is set in config, every POST route requires
-`Authorization: Bearer <token>`. GET routes stay open (health checks and the
-static UI shouldn't need a token to load; the UI itself prompts for one and
-attaches it to its own POST calls). With no token configured, POST routes
-are open too -- the same "local trust" model as talking to Ollama on
-localhost. Binding this server to a non-loopback address without a token is
-your call to make, not this module's -- it does not enforce a bind-address
-policy, unlike some deployments that refuse 0.0.0.0 without auth.
+If `api.token` is set in config, every POST route -- and also GET /source --
+requires `Authorization: Bearer <token>`. GET /, /health, /stats and /domains
+stay open (health checks and the static UI shouldn't need a token to load;
+the UI itself prompts for one and attaches it to its own POST calls). GET
+/source is gated the same way as POST routes because it returns full
+document text, same sensitivity as /search and /ask results. With no token
+configured, the gated routes are open too -- the same "local trust" model as
+talking to Ollama on localhost. Binding this server to a non-loopback
+address without a token is your call to make, not this module's -- it does
+not enforce a bind-address policy, unlike some deployments that refuse
+0.0.0.0 without auth.
 
 CORS
 ----
@@ -38,7 +44,7 @@ from __future__ import annotations
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 MAX_QUERY_LEN = 2000
 MAX_K = 50
@@ -109,6 +115,13 @@ def _make_handler(cfg: dict):
                     self._handle_health()
                 elif path == "/stats":
                     self._handle_stats()
+                elif path == "/domains":
+                    self._handle_domains()
+                elif path == "/source":
+                    if not self._authorized():
+                        self._send_error_json(401, "unauthorized")
+                        return
+                    self._handle_source()
                 else:
                     self._send_error_json(404, "unknown route: %s" % path)
             except Exception as exc:  # pragma: no cover - defensive
@@ -186,6 +199,81 @@ def _make_handler(cfg: dict):
                     ],
                     "equipment": equipment_count,
                     "db_size_bytes": db_size,
+                },
+            )
+
+        def _handle_domains(self) -> None:
+            from . import db
+
+            con = db.connect(cfg["paths"]["db_path"], read_only=True)
+            try:
+                counts = dict(
+                    con.execute(
+                        "SELECT domain, COUNT(*) FROM documents GROUP BY domain"
+                    ).fetchall()
+                )
+            finally:
+                con.close()
+            taxonomy = cfg.get("taxonomy", [])
+            names = list(taxonomy) + [d for d in counts if d not in taxonomy]
+            domains = [{"name": name, "documents": counts.get(name, 0)} for name in names]
+            self._send_json(200, {"domains": domains})
+
+        def _handle_source(self) -> None:
+            from . import db
+
+            qs = parse_qs(urlparse(self.path).query)
+            document_id_raw = (qs.get("document_id") or [None])[0]
+            rel_path = (qs.get("rel_path") or [None])[0]
+
+            con = db.connect(cfg["paths"]["db_path"], read_only=True)
+            try:
+                if document_id_raw is not None:
+                    try:
+                        document_id = int(document_id_raw)
+                    except ValueError:
+                        self._send_error_json(400, "'document_id' must be an integer")
+                        return
+                    row = con.execute(
+                        "SELECT id, source, rel_path, domain, summary, extractor, n_chunks "
+                        "FROM documents WHERE id = ?",
+                        [document_id],
+                    ).fetchone()
+                elif rel_path:
+                    row = con.execute(
+                        "SELECT id, source, rel_path, domain, summary, extractor, n_chunks "
+                        "FROM documents WHERE rel_path = ?",
+                        [rel_path],
+                    ).fetchone()
+                else:
+                    self._send_error_json(400, "missing 'document_id' or 'rel_path'")
+                    return
+
+                if not row:
+                    self._send_error_json(404, "document not found")
+                    return
+
+                doc_id, source, doc_rel_path, domain, summary, extractor, n_chunks = row
+                chunk_rows = con.execute(
+                    "SELECT text FROM chunks WHERE document_id = ? ORDER BY seq", [doc_id]
+                ).fetchall()
+            finally:
+                con.close()
+
+            text = "\n\n".join(r[0] for r in chunk_rows)
+            self._send_json(
+                200,
+                {
+                    "document": {
+                        "id": doc_id,
+                        "source": source,
+                        "rel_path": doc_rel_path,
+                        "domain": domain,
+                        "summary": summary,
+                        "extractor": extractor,
+                        "n_chunks": n_chunks,
+                    },
+                    "text": text,
                 },
             )
 
