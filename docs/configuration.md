@@ -57,6 +57,21 @@ value is kept) rather than crashing config load.
 | `gen_url` | `http://127.0.0.1:11434/api/chat` | `OPENKB_LLM_GEN_URL` | Chat endpoint used for classification, summarisation, answer generation, LLM rerank, and entity extraction/adjudication. Ollama's native `/api/chat` shape is detected by URL; anything else is treated as OpenAI-compatible `/v1/chat/completions` |
 | `gen_model` | `your-general-model` | `OPENKB_LLM_GEN_MODEL` | Any modern instruct model — e.g. a Qwen or Llama instruct variant |
 | `timeout_s` | `240` | `OPENKB_LLM_TIMEOUT_S` | Per-request timeout; generation on a CPU-bound local model can be slow, especially for longer answers |
+| `think` | `false` | `OPENKB_LLM_THINK` | Ollama-native reasoning toggle for ingest's classification and summarisation calls. **Leave `false` unless you have a reason.** Reasoning models return their chain-of-thought in a separate `message.thinking` field and leave `message.content` empty until it completes — so a reasoning model on a small token budget returns an *empty answer* with `done_reason: "length"`, silently filing every document under the catch-all bucket. Set to `null` to omit the field entirely for endpoints that reject unknown keys (the call also auto-retries without it) |
+
+### Reasoning ("thinking") models
+
+If ingest classifies everything into the catch-all bucket and roughly half your summaries come
+back blank, with no errors anywhere, the model is a reasoning model and `llm.think` is not
+`false`. Measured on `gemma4:26b-a4b-it-qat` against a classification prompt:
+
+| `think` | `message.content` | `message.thinking` | `done_reason` | evals |
+|---|---|---|---|---|
+| unset | `''` | 593 chars | `length` | 160 |
+| `false` | `'04_SAFETY'` | empty | `stop` | 5 |
+
+The failure is silent by design — classification falls back to the catch-all bucket rather than
+erroring — which is why it is worth knowing about before you spend an evening on it.
 
 ## `embeddings`
 

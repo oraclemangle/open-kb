@@ -320,6 +320,117 @@ def _strip_reasoning(text: str) -> str:
     return text.strip()
 
 
+def _chat(llm_cfg: dict, messages: list[dict], options: dict,
+          think: bool | None = False) -> dict:
+    """One chat completion, with reasoning suppressed by default.
+
+    Why ``think=False`` is the default for this module's calls:
+
+    Modern Ollama builds return a *separate* ``message.thinking`` field for
+    reasoning models and leave ``message.content`` EMPTY until reasoning
+    finishes. A reasoning model given a small ``num_predict`` therefore
+    returns an empty answer with ``done_reason: "length"`` — it spent the
+    whole budget thinking. For the strict-choice calls here (pick one
+    taxonomy code; write two factual sentences) reasoning buys nothing and
+    costs the entire token budget, so it is switched off explicitly.
+
+    Measured on gemma4:26b-a4b-it-qat, classification prompt:
+        think unset  -> content='',           thinking=593 chars, done=length
+        think=False  -> content='04_SAFETY',  thinking=0 chars,   done=stop (5 evals)
+
+    Fail-open: ``think`` is an Ollama-native field. If the configured
+    endpoint rejects it (a non-Ollama OpenAI-compatible server), the call is
+    retried once without it rather than failing the document.
+    """
+    url = llm_cfg.get("gen_url", "http://127.0.0.1:11434/api/chat")
+    timeout = llm_cfg.get("timeout_s", 240)
+    payload = {
+        "model": llm_cfg.get("gen_model", "your-general-model"),
+        "messages": messages,
+        "stream": False,
+        "options": options,
+    }
+    # Config may set llm.think: null to omit the field entirely.
+    effective = llm_cfg.get("think", think)
+    if effective is not None:
+        payload["think"] = bool(effective)
+        try:
+            return _post_json(url, payload, timeout=timeout)
+        except Exception:
+            payload.pop("think", None)
+    return _post_json(url, payload, timeout=timeout)
+
+
+def _message_text(result: dict) -> str:
+    """Answer text from a chat result.
+
+    Prefers ``message.content``. Falls back to ``message.thinking`` only when
+    content is empty — a reasoning model that was cut off mid-thought often
+    still has the answer somewhere in its reasoning, and recovering it beats
+    silently bucketing the document as unclassifiable.
+    """
+    msg = (result or {}).get("message", {}) or {}
+    content = _strip_reasoning(msg.get("content") or "")
+    if content:
+        return content
+    return _strip_reasoning(msg.get("thinking") or "")
+
+
+def _parse_domain_reply(reply: str, taxonomy: list[str]) -> str | None:
+    """Extract a taxonomy code from a model reply, or None.
+
+    Naive ``code in reply`` matching breaks on two very common model
+    behaviours, both observed with instruct models that emit a preamble:
+
+      1. The model restates the option list before answering
+         ("Domains: 00_ELECTRICAL, 01_MECHANICAL, ... The code is 04_SAFETY").
+         A first-match scan returns ``00_ELECTRICAL`` — confidently wrong.
+      2. The model answers in a sentence rather than a bare token
+         ("This document belongs to 04_SAFETY."). First-match happens to work
+         here, but only by luck.
+
+    Both are handled by preferring the LAST occurrence in the reply: models
+    restate options first and commit last. When the reply has a final
+    non-empty line containing exactly one code, that wins outright — it is
+    the strongest available signal of the model's actual choice.
+
+    Matching is case-insensitive. As a last resort the label half of a code
+    is matched on its own ("SAFETY" -> "04_SAFETY"), which rescues models
+    that drop the numeric prefix.
+    """
+    if not reply:
+        return None
+    low = reply.lower()
+
+    # Strongest signal: the final non-empty line naming exactly one code.
+    for line in reversed([ln.strip() for ln in reply.splitlines() if ln.strip()]):
+        found = {c for c in taxonomy if c.lower() in line.lower()}
+        if len(found) == 1:
+            return found.pop()
+        if found:
+            break  # ambiguous final line; fall through to positional scan
+
+    # Otherwise take the last code mentioned anywhere.
+    best, best_pos = None, -1
+    for c in taxonomy:
+        pos = low.rfind(c.lower())
+        if pos > best_pos:
+            best, best_pos = c, pos
+    if best is not None and best_pos >= 0:
+        return best
+
+    # Last resort: the label half only ("SAFETY" for "04_SAFETY").
+    best, best_pos = None, -1
+    for c in taxonomy:
+        label = c.split("_", 1)[1].lower() if "_" in c else c.lower()
+        if len(label) < 4:
+            continue
+        pos = low.rfind(label)
+        if pos > best_pos:
+            best, best_pos = c, pos
+    return best if best_pos >= 0 else None
+
+
 def classify_document(rel_path: str, text: str, cfg: dict) -> str:
     """Choose one taxonomy bucket for a document via the general LLM.
 
@@ -350,18 +461,16 @@ def classify_document(rel_path: str, text: str, cfg: dict) -> str:
             % (", ".join(taxonomy), rel_path, sample[:1200]),
         },
     ]
-    payload = {
-        "model": llm_cfg.get("gen_model", "your-general-model"),
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0.1, "top_p": 0.8, "top_k": 20, "num_predict": 20},
-    }
     try:
-        result = _post_json(llm_cfg.get("gen_url", "http://127.0.0.1:11434/api/chat"), payload, timeout=llm_cfg.get("timeout_s", 240))
-        reply = (result.get("message", {}).get("content", "") or "").strip()
-        for candidate in taxonomy:
-            if candidate in reply:
-                return candidate
+        # 160 rather than 20: with reasoning suppressed a bare code costs ~5
+        # tokens, but a model that answers in a sentence needs headroom, and
+        # the _message_text() thinking-fallback needs something to work with
+        # if a reasoning model ignores think=False.
+        result = _chat(llm_cfg, messages,
+                       {"temperature": 0.1, "top_p": 0.8, "top_k": 20, "num_predict": 160})
+        matched = _parse_domain_reply(_message_text(result), taxonomy)
+        if matched:
+            return matched
     except Exception:
         pass
     return catch_all
@@ -387,16 +496,11 @@ def summarize_document(text: str, cfg: dict) -> str:
         },
         {"role": "user", "content": text[:6000]},
     ]
-    payload = {
-        "model": llm_cfg.get("gen_model", "your-general-model"),
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0.3, "top_p": 0.8, "top_k": 20, "num_predict": 800},
-    }
     for _attempt in range(2):
         try:
-            result = _post_json(llm_cfg.get("gen_url", "http://127.0.0.1:11434/api/chat"), payload, timeout=llm_cfg.get("timeout_s", 240))
-            reply = _strip_reasoning(result.get("message", {}).get("content", "") or "")
+            result = _chat(llm_cfg, messages,
+                           {"temperature": 0.3, "top_p": 0.8, "top_k": 20, "num_predict": 800})
+            reply = _message_text(result)
             if not _is_degenerate_summary(reply):
                 return reply
         except Exception:
