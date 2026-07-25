@@ -159,6 +159,18 @@ merges are the same shape: proposals are written, and only applied
 explicitly, above a confidence threshold or with human approval. A knowledge
 base you can't safely un-break is a knowledge base people stop trusting.
 
+## Maintainer & commercial deployment
+
+open-kb is built and maintained by [Kelvin Marine Technology](https://kelvinmarine.com),
+an independent superyacht AVIT consultancy. The pipeline this project generalises runs in
+production aboard a 100 m+ motor yacht, where it has ingested a 1,200+-file engineering
+document corpus (~61k chunks) fully offline.
+
+For commissioned deployments — corpus assurance, on-prem appliance installs, taxonomy
+design, and support — see
+[kelvinmarine.com](https://kelvinmarine.com/services/vessel-knowledge-systems/) or email
+`contact@kelvinmarine.com`.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
