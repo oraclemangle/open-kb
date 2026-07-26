@@ -52,11 +52,50 @@ __all__ = ["load_gold", "validate_gold_item", "run_eval", "main"]
 
 _CONTRACT_KEYS = {"id", "category", "expected_behaviour", "expect_citations"}
 _FAILURE_CATEGORIES = {"kb_failure", "model_failure", "embedding_failure"}
+_DEGRADED_SENTINEL = "[degraded answer:"
 _REFUSAL_MARKERS = (
     "cannot find", "could not find", "not found", "no relevant",
     "insufficient information", "retrieval failed", "generation failed",
     "embedding failed", "unavailable", "offline",
 )
+
+# Phrases by which a model states, from the retrieved material, that the
+# corpus does not contain the requested fact. This is a *grounded non-answer*:
+# it cites real documents and reports their silence. It is not a refusal (the
+# system did answer) and emphatically not a hallucination.
+_ABSENCE_MARKERS = (
+    "does not specify", "does not contain", "does not mention",
+    "does not include", "does not indicate", "does not provide",
+    "does not appear", "does not state", "does not detail",
+    "no information", "no mention", "no details", "no specific",
+    "not specified", "not documented", "not stated", "not provided",
+    "not detailed", "not included", "not available in",
+    "there is no", "unable to determine", "cannot be determined",
+    "is not present in", "do not specify", "do not contain",
+    "do not mention", "do not provide",
+)
+
+# Phrases by which an answer DEFERS: it does not state the requested value,
+# it says which document holds it. Measured example, faithfully quoting a
+# delivered manual: "The generator incomer settings ... are recorded in the
+# as-built single line diagram package (drawing set E-100)". The corpus really
+# does say that, so the answer is grounded; it simply is not the value asked
+# for. Rewarding this matters — pointing at the missing document is the single
+# most useful thing the system can do, and it is the same conclusion the
+# readiness report reaches as REFERENCED_NOT_DELIVERED.
+_DEFERRAL_MARKERS = (
+    "are recorded in", "is recorded in", "are documented in", "is documented in",
+    "are detailed in", "is detailed in", "are held", "is held by",
+    "are contained in", "is contained in", "refer to the", "see drawing",
+    "see the drawing", "would be found in", "can be found in",
+    "are listed in", "is listed in", "are specified in the", "is specified in the",
+)
+
+# The three ways a system can respond to a question the corpus cannot answer.
+# Only the last is a failure.
+NEG_REFUSED = "refused"                       # declined outright
+NEG_GROUNDED_NON_ANSWER = "grounded_non_answer"   # cited sources, reported their silence
+NEG_UNSUPPORTED = "unsupported_assertion"     # asserted a fact the corpus lacks
 
 
 def validate_gold_item(item: dict) -> None:
@@ -140,9 +179,76 @@ def _citation_numbers(answer: str) -> list[int]:
     return [int(value) for value in re.findall(r"\[(\d+)\]", answer or "")]
 
 
-def _is_refusal(answer: str, sources: list[dict]) -> bool:
+def _is_refusal(answer: str, sources: list[dict], state: str = "") -> bool:
+    """True when the system declined to assert an answer.
+
+    The previous rule required ``not sources``, which made this metric
+    essentially unmeasurable: hybrid retrieval always returns its top-k, so a
+    cited-answer system practically never has zero sources. A run against a
+    corpus with eight negative controls scored refusal_quality 0/8 while the
+    system was in fact refusing correctly on all of them — it emitted the
+    "[Degraded answer: generation returned no valid source citations]"
+    sentinel, which contains none of the refusal markers either.
+
+    What actually distinguishes a refusal is that the answer **asserts
+    nothing of its own**: it carries no citations, and either the engine
+    reported a non-grounded state or the text uses a refusal marker.
+    Retrieving candidate passages and then declining to answer from them is
+    the correct behaviour, not a failure — and it is exactly the behaviour a
+    buyer is being asked to trust.
+    """
+    return _classify_negative(answer, sources, state) == NEG_REFUSED
+
+
+def _classify_negative(answer: str, sources: list[dict], state: str = "") -> str:
+    """Classify a response to a question the corpus cannot answer.
+
+    Returns one of :data:`NEG_REFUSED`, :data:`NEG_GROUNDED_NON_ANSWER`,
+    :data:`NEG_UNSUPPORTED`.
+
+    Why three outcomes rather than refuse/not-refuse. Measured on a real
+    corpus, the two-way split scored 5/8 and called these failures:
+
+        "The provided documentation does not specify the individual permitted
+         flows; it only states that inter-VLAN routing is default-deny and
+         that permitted flows are documented in a firewall rule export held by
+         the yard's integrator [1]."
+
+    That is not a failure. The system read the retrieved documents, reported
+    exactly what they do and do not contain, cited them, and named the missing
+    document — strictly more useful to a reader than a bare refusal, because it
+    says where to look next. Scoring it alongside an invented answer makes the
+    metric punish the better behaviour.
+
+    The only real failure is asserting a fact the corpus does not support.
+
+    **Limitation, stated plainly.** This is keyword classification. It cannot
+    reliably separate a faithful restatement that happens to lack an absence
+    phrase from a confidently invented one, and a hallucinating model could in
+    principle produce deferral-shaped text. Treat
+    ``negative_controls.unsupported_assertion`` as a screen that flags
+    candidates, not as a proof of no hallucination. Any run whose numbers
+    carry contractual weight should have a human read every negative-control
+    answer — there are only ever a handful of them, and it is the cheapest
+    high-value review in the whole acceptance process.
+    """
     lowered = (answer or "").lower()
-    return not sources and any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+    # State first, and deliberately before any citation check: the degraded
+    # answer LISTS its candidate excerpts as "[1] file — text", so a naive
+    # citation scan finds [1], [2]... and would conclude the system had cited
+    # sources when it explicitly declined to.
+    if state in ("no_relevant", "degraded", "retrieval_error"):
+        return NEG_REFUSED
+    if _DEGRADED_SENTINEL in lowered:
+        return NEG_REFUSED
+    if any(marker in lowered for marker in _REFUSAL_MARKERS):
+        return NEG_REFUSED
+    if any(marker in lowered for marker in _ABSENCE_MARKERS):
+        return NEG_GROUNDED_NON_ANSWER
+    if any(marker in lowered for marker in _DEFERRAL_MARKERS):
+        return NEG_GROUNDED_NON_ANSWER
+    return NEG_UNSUPPORTED
 
 
 def _citations_support_facts(citations: list[int], hits: list[dict], expected_facts: list[str]) -> bool:
@@ -190,6 +296,7 @@ def run_eval(
     citation_support_total = citation_support_hits = 0
     correctness_total = correctness_hits = 0
     refusal_total = refusal_hits = 0
+    neg_counts = {NEG_REFUSED: 0, NEG_GROUNDED_NON_ANSWER: 0, NEG_UNSUPPORTED: 0}
     failure_total = failure_hits = 0
 
     for g in gold:
@@ -242,11 +349,14 @@ def run_eval(
 
             if behaviour == "refuse":
                 refusal_total += 1
-                if _is_refusal(answer, sources):
+                outcome = _classify_negative(answer, sources, row.get("state", ""))
+                neg_counts[outcome] += 1
+                row["negative_outcome"] = outcome
+                if outcome == NEG_REFUSED:
                     refusal_hits += 1
             if g.get("category") in _FAILURE_CATEGORIES:
                 failure_total += 1
-                if behaviour == "degraded" and _is_refusal(answer, sources):
+                if behaviour == "degraded" and _is_refusal(answer, sources, row.get("state", "")):
                     failure_hits += 1
 
             if expect_substr:
@@ -280,7 +390,23 @@ def run_eval(
         results["citation_validity"] = _metric(citation_validity_hits, citation_validity_total)
         results["citation_support"] = _metric(citation_support_hits, citation_support_total)
         results["known_answer_correctness"] = _metric(correctness_hits, correctness_total)
+        # refusal_quality keeps its narrow historical meaning (declined
+        # outright) so nothing downstream silently changes definition.
         results["refusal_quality"] = _metric(refusal_hits, refusal_total)
+        # negative_controls is the metric to judge the system by: the only
+        # failure mode is asserting a fact the corpus does not support.
+        # A grounded non-answer -- citing documents and reporting their
+        # silence -- is a success, and arguably the best of the three.
+        results["negative_controls"] = {
+            "total": refusal_total,
+            "refused": neg_counts[NEG_REFUSED],
+            "grounded_non_answer": neg_counts[NEG_GROUNDED_NON_ANSWER],
+            "unsupported_assertion": neg_counts[NEG_UNSUPPORTED],
+            "no_unsupported_assertion_rate": (
+                (refusal_total - neg_counts[NEG_UNSUPPORTED]) / refusal_total
+                if refusal_total else None
+            ),
+        }
         results["failure_behaviour"] = _metric(failure_hits, failure_total)
     return results
 

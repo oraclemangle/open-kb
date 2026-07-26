@@ -344,6 +344,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("eval", help="Run the retrieval/answer quality eval harness")
     sp.add_argument("--gold", default=None, help="Path to gold JSONL (default: config eval.gold_path)")
+    sp.add_argument("--k", type=int, default=None,
+                    help="Cut-off for recall@k / MRR (default: config eval.k)")
     sp.add_argument("--retrieval-only", action="store_true", help="Skip answer generation, score retrieval only")
     sp.add_argument("--json", default=None, help="Write full JSON report to this path")
     sp.set_defaults(func=cmd_eval)
