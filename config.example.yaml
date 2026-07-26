@@ -17,6 +17,13 @@ llm:
   gen_url: http://127.0.0.1:11434/api/chat     # chat endpoint (Ollama native shown)
   gen_model: your-general-model                # summarise / classify / answer
   timeout_s: 240
+  think: false                                 # suppress reasoning on ingest's classify/
+                                               # summarise calls. Reasoning models return
+                                               # chain-of-thought in message.thinking and
+                                               # leave message.content EMPTY until it ends —
+                                               # leaving this unset makes a reasoning model
+                                               # file every document under the catch-all
+                                               # bucket, silently. null = never send field.
 
 embeddings:
   url: http://127.0.0.1:1234/v1/embeddings     # OpenAI-compatible embeddings endpoint
